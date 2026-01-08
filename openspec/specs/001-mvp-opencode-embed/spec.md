@@ -76,9 +76,8 @@ The plugin SHALL provide controls in the view header when the server is running.
 
 #### Scenario: Header controls available
 - **WHEN** the server is running
-- **THEN** the header displays reload, open-in-browser, and stop buttons
+- **THEN** the header displays reload and stop buttons
 - **AND** clicking reload refreshes the iframe
-- **AND** clicking open-in-browser opens the server URL in system browser
 - **AND** clicking stop terminates the server
 
 ### Requirement: Lazy Server Start
