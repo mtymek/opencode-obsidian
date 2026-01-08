@@ -35,7 +35,8 @@ var DEFAULT_SETTINGS = {
   hostname: "127.0.0.1",
   autoStart: false,
   opencodePath: "opencode",
-  projectDirectory: ""
+  projectDirectory: "",
+  startupTimeout: 15e3
 };
 var OPENCODE_VIEW_TYPE = "opencode-view";
 
@@ -498,7 +499,7 @@ var ProcessManager = class {
         this.setError(`Failed to start: ${err.message}`);
       }
     });
-    const ready = await this.waitForServerOrExit(15e3);
+    const ready = await this.waitForServerOrExit(this.settings.startupTimeout);
     if (ready) {
       this.setState("running");
       return true;

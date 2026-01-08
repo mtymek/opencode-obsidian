@@ -129,7 +129,7 @@ export class ProcessManager {
     });
 
     // Wait for server to be ready
-    const ready = await this.waitForServerOrExit(15000);
+    const ready = await this.waitForServerOrExit(this.settings.startupTimeout);
     if (ready) {
       this.setState("running");
       return true;

@@ -4,6 +4,7 @@ export interface OpenCodeSettings {
   autoStart: boolean;
   opencodePath: string;
   projectDirectory: string;
+  startupTimeout: number;
 }
 
 export const DEFAULT_SETTINGS: OpenCodeSettings = {
@@ -12,6 +13,7 @@ export const DEFAULT_SETTINGS: OpenCodeSettings = {
   autoStart: false,
   opencodePath: "opencode",
   projectDirectory: "",
+  startupTimeout: 15000,
 };
 
 export const OPENCODE_VIEW_TYPE = "opencode-view";

@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+      
+      - name: Cache OpenCode binary
+        id: cache-opencode
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/bin/opencode
+          key: ${{ runner.os }}-opencode-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-opencode-
+      
+      - name: Install dependencies
+        run: bun install
+      
+      - name: Install OpenCode CLI
+        if: steps.cache-opencode.outputs.cache-hit != 'true'
+        run: bun install -g opencode-ai
+      
+      - name: Verify OpenCode installation
+        run: opencode --version
+      
+      - name: Type check
+        run: bun run tsc -noEmit -skipLibCheck
+      
+      - name: Build plugin
+        run: bun run build
+      
+      - name: Run tests
+        run: bun test

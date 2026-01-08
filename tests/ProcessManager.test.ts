@@ -1,0 +1,225 @@
+import { describe, test, expect, beforeAll, afterEach } from "bun:test";
+import { ProcessManager, ProcessState } from "../src/ProcessManager";
+import { OpenCodeSettings } from "../src/types";
+
+// Test configuration
+const TEST_PORT_BASE = 15000;
+const TEST_TIMEOUT_MS = 10000; // 10 seconds for server startup in tests
+const PROJECT_DIR = process.cwd();
+
+let currentPort = TEST_PORT_BASE;
+
+function getNextPort(): number {
+  return currentPort++;
+}
+
+function createTestSettings(port: number): OpenCodeSettings {
+  return {
+    port,
+    hostname: "127.0.0.1",
+    autoStart: false,
+    opencodePath: "opencode",
+    projectDirectory: "",
+    startupTimeout: TEST_TIMEOUT_MS,
+  };
+}
+
+// Track current manager for cleanup
+let currentManager: ProcessManager | null = null;
+
+// Verify opencode binary is available before running tests
+beforeAll(async () => {
+  const proc = Bun.spawn(["opencode", "--version"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const exitCode = await proc.exited;
+
+  if (exitCode !== 0) {
+    throw new Error(
+      "opencode binary not found or not executable. " +
+        "Please ensure 'opencode' is installed and available in PATH."
+    );
+  }
+});
+
+// Cleanup after each test
+afterEach(async () => {
+  if (currentManager) {
+    currentManager.stop();
+    // Give process time to fully terminate
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    currentManager = null;
+  }
+});
+
+describe("ProcessManager", () => {
+  describe("happy path", () => {
+    test("starts server and transitions to running state", async () => {
+      const port = getNextPort();
+      const settings = createTestSettings(port);
+      const stateHistory: ProcessState[] = [];
+
+      currentManager = new ProcessManager(
+        settings,
+        PROJECT_DIR,
+        PROJECT_DIR,
+        (state) => stateHistory.push(state)
+      );
+
+      expect(currentManager.getState()).toBe("stopped");
+
+      const success = await currentManager.start();
+
+      expect(success).toBe(true);
+      expect(currentManager.getState()).toBe("running");
+      expect(stateHistory).toContain("starting");
+      expect(stateHistory).toContain("running");
+    });
+
+    test("reports correct server URL with encoded project directory", async () => {
+      const port = getNextPort();
+      const settings = createTestSettings(port);
+
+      currentManager = new ProcessManager(
+        settings,
+        PROJECT_DIR,
+        PROJECT_DIR,
+        () => {}
+      );
+
+      const url = currentManager.getUrl();
+      const expectedBase = `http://127.0.0.1:${port}`;
+      const expectedPath = btoa(PROJECT_DIR);
+
+      expect(url).toBe(`${expectedBase}/${expectedPath}`);
+    });
+
+    test("stops server gracefully and transitions to stopped state", async () => {
+      const port = getNextPort();
+      const settings = createTestSettings(port);
+      const stateHistory: ProcessState[] = [];
+
+      currentManager = new ProcessManager(
+        settings,
+        PROJECT_DIR,
+        PROJECT_DIR,
+        (state) => stateHistory.push(state)
+      );
+
+      await currentManager.start();
+      expect(currentManager.getState()).toBe("running");
+
+      currentManager.stop();
+
+      expect(currentManager.getState()).toBe("stopped");
+      expect(stateHistory).toContain("stopped");
+    });
+
+    test("state callbacks fire in correct order: starting -> running", async () => {
+      const port = getNextPort();
+      const settings = createTestSettings(port);
+      const stateHistory: ProcessState[] = [];
+
+      currentManager = new ProcessManager(
+        settings,
+        PROJECT_DIR,
+        PROJECT_DIR,
+        (state) => stateHistory.push(state)
+      );
+
+      await currentManager.start();
+
+      // Verify order: first starting, then running
+      const startingIndex = stateHistory.indexOf("starting");
+      const runningIndex = stateHistory.indexOf("running");
+
+      expect(startingIndex).toBeGreaterThanOrEqual(0);
+      expect(runningIndex).toBeGreaterThan(startingIndex);
+    });
+
+    test("can restart after stop", async () => {
+      const port = getNextPort();
+      const settings = createTestSettings(port);
+
+      currentManager = new ProcessManager(
+        settings,
+        PROJECT_DIR,
+        PROJECT_DIR,
+        () => {}
+      );
+
+      // First start
+      const firstStart = await currentManager.start();
+      expect(firstStart).toBe(true);
+      expect(currentManager.getState()).toBe("running");
+
+      // Stop
+      currentManager.stop();
+      expect(currentManager.getState()).toBe("stopped");
+
+      // Wait for process to fully terminate
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+
+      // Restart
+      const secondStart = await currentManager.start();
+      expect(secondStart).toBe(true);
+      expect(currentManager.getState()).toBe("running");
+    });
+
+    test("returns true immediately if already running", async () => {
+      const port = getNextPort();
+      const settings = createTestSettings(port);
+
+      currentManager = new ProcessManager(
+        settings,
+        PROJECT_DIR,
+        PROJECT_DIR,
+        () => {}
+      );
+
+      // First start
+      await currentManager.start();
+      expect(currentManager.getState()).toBe("running");
+
+      // Second start should return true immediately without state changes
+      const stateHistory: ProcessState[] = [];
+      const originalOnStateChange = (currentManager as any).onStateChange;
+      (currentManager as any).onStateChange = (state: ProcessState) => {
+        stateHistory.push(state);
+        originalOnStateChange(state);
+      };
+
+      const result = await currentManager.start();
+
+      expect(result).toBe(true);
+      expect(currentManager.getState()).toBe("running");
+      // Should not have triggered any state changes
+      expect(stateHistory).toEqual([]);
+    });
+
+    test("health check endpoint is accessible when running", async () => {
+      const port = getNextPort();
+      const settings = createTestSettings(port);
+
+      currentManager = new ProcessManager(
+        settings,
+        PROJECT_DIR,
+        PROJECT_DIR,
+        () => {}
+      );
+
+      await currentManager.start();
+
+      // Verify we can hit the health endpoint
+      const url = currentManager.getUrl();
+      const healthUrl = `${url}/global/health`;
+
+      const response = await fetch(healthUrl, {
+        signal: AbortSignal.timeout(2000),
+      });
+
+      expect(response.ok).toBe(true);
+    });
+  });
+});
