@@ -19,7 +19,7 @@ _Note: plugin author is not afiliated with OpenCode or Obsidian - this is a 3rd 
 - [OpenCode CLI](https://opencode.ai) installed 
 - [Bun](https://bun.sh) installed
 
-## Installation
+## Development
 
 1. Clone to `.obsidian/plugins/obsidian-opencode` subdirectory under your vault's root
 2. Run `bun install && bun run build`

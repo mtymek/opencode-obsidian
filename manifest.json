@@ -1,7 +1,7 @@
 {
   "id": "obsidian-opencode",
   "name": "OpenCode",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minAppVersion": "1.4.0",
   "description": "Embed OpenCode AI assistant in Obsidian for AI-powered note management",
   "author": "mat",

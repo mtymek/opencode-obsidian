@@ -1,6 +1,14 @@
-import { spawn, ChildProcess } from "child_process";
-import { homedir } from "os";
+import { spawn, ChildProcess, SpawnOptions } from "child_process";
+import { homedir, platform } from "os";
+import { existsSync } from "fs";
+import { join } from "path";
 import { OpenCodeSettings } from "./types";
+
+interface SpawnConfig {
+  command: string;
+  args: string[];
+  options: SpawnOptions;
+}
 
 export type ProcessState = "stopped" | "starting" | "running" | "error";
 
@@ -76,23 +84,10 @@ export class ProcessManager {
       projectDirectory: this.projectDirectory,
     });
 
-    const home = homedir();
-    const command = `${this.settings.opencodePath} serve --port ${this.settings.port} --hostname ${this.settings.hostname} --cors app://obsidian.md`;
+    const baseCmd = `${this.settings.opencodePath} serve --port ${this.settings.port} --hostname ${this.settings.hostname} --cors app://obsidian.md`;
+    const spawnConfig = this.buildSpawnConfig(baseCmd);
 
-    // Use interactive login shell (-i -l) to load user's full environment
-    // -l alone won't work because .bashrc has "case $- in *i*) ;; *) return;; esac"
-    this.process = spawn("/bin/bash", ["-i", "-l", "-c", command], {
-      cwd: this.workingDirectory,
-      env: {
-        ...process.env,
-        HOME: home,
-        SHELL: "/bin/bash",
-        TERM: "xterm",
-        XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME || `${home}/.config`,
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: false,
-    });
+    this.process = spawn(spawnConfig.command, spawnConfig.args, spawnConfig.options);
 
     console.log("[OpenCode] Process spawned with PID:", this.process.pid);
 
@@ -219,5 +214,81 @@ export class ProcessManager {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private buildSpawnConfig(baseCommand: string): SpawnConfig {
+    const home = homedir();
+    const plat = platform();
+
+    if (plat === "win32") {
+      return {
+        command: "cmd.exe",
+        args: ["/c", baseCommand],
+        options: {
+          cwd: this.workingDirectory,
+          env: { ...process.env },
+          stdio: ["ignore", "pipe", "pipe"],
+          detached: false,
+        },
+      };
+    }
+
+    const shell = process.env.SHELL || "/bin/bash";
+    const isZsh = shell.includes("zsh");
+    const envSetup = this.buildUnixEnvSetup(home, isZsh);
+    const fullCommand = envSetup ? `${envSetup} ${baseCommand}` : baseCommand;
+
+    return {
+      command: shell,
+      args: ["-c", fullCommand],
+      options: {
+        cwd: this.workingDirectory,
+        env: {
+          ...process.env,
+          HOME: home,
+          XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME || `${home}/.config`,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: false,
+      },
+    };
+  }
+
+  private buildUnixEnvSetup(home: string, isZsh: boolean): string {
+    const parts: string[] = [];
+
+    if (isZsh) {
+      const zshrc = join(home, ".zshrc");
+      if (existsSync(zshrc)) {
+        parts.push(`source "${zshrc}" 2>/dev/null`);
+      }
+    } else {
+      const nvmDirs = [
+        join(home, ".nvm"),
+        join(home, ".config", "nvm"),
+        process.env.NVM_DIR,
+      ].filter(Boolean) as string[];
+
+      for (const nvmDir of nvmDirs) {
+        const nvmSh = join(nvmDir, "nvm.sh");
+        if (existsSync(nvmSh)) {
+          parts.push(`export NVM_DIR="${nvmDir}"; source "${nvmSh}" 2>/dev/null`);
+          break;
+        }
+      }
+
+      const bashrc = join(home, ".bashrc");
+      if (existsSync(bashrc)) {
+        parts.push(`source "${bashrc}" 2>/dev/null`);
+      }
+    }
+
+    const brewPaths = ["/opt/homebrew/bin", "/usr/local/bin"];
+    const existingBrewPaths = brewPaths.filter(existsSync);
+    if (existingBrewPaths.length > 0) {
+      parts.push(`export PATH="${existingBrewPaths.join(":")}:$PATH"`);
+    }
+
+    return parts.length > 0 ? parts.join("; ") + ";" : "";
   }
 }

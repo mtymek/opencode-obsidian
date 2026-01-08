@@ -411,6 +411,8 @@ var OpenCodeSettingTab = class extends import_obsidian3.PluginSettingTab {
 // src/ProcessManager.ts
 var import_child_process = require("child_process");
 var import_os2 = require("os");
+var import_fs2 = require("fs");
+var import_path = require("path");
 var ProcessManager = class {
   constructor(settings, workingDirectory, projectDirectory, onStateChange) {
     this.process = null;
@@ -462,20 +464,9 @@ var ProcessManager = class {
       cwd: this.workingDirectory,
       projectDirectory: this.projectDirectory
     });
-    const home = (0, import_os2.homedir)();
-    const command = `${this.settings.opencodePath} serve --port ${this.settings.port} --hostname ${this.settings.hostname} --cors app://obsidian.md`;
-    this.process = (0, import_child_process.spawn)("/bin/bash", ["-i", "-l", "-c", command], {
-      cwd: this.workingDirectory,
-      env: {
-        ...process.env,
-        HOME: home,
-        SHELL: "/bin/bash",
-        TERM: "xterm",
-        XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME || `${home}/.config`
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: false
-    });
+    const baseCmd = `${this.settings.opencodePath} serve --port ${this.settings.port} --hostname ${this.settings.hostname} --cors app://obsidian.md`;
+    const spawnConfig = this.buildSpawnConfig(baseCmd);
+    this.process = (0, import_child_process.spawn)(spawnConfig.command, spawnConfig.args, spawnConfig.options);
     console.log("[OpenCode] Process spawned with PID:", this.process.pid);
     (_a = this.process.stdout) == null ? void 0 : _a.on("data", (data) => {
       console.log("[OpenCode]", data.toString().trim());
@@ -574,6 +565,72 @@ var ProcessManager = class {
   }
   sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+  buildSpawnConfig(baseCommand) {
+    const home = (0, import_os2.homedir)();
+    const plat = (0, import_os2.platform)();
+    if (plat === "win32") {
+      return {
+        command: "cmd.exe",
+        args: ["/c", baseCommand],
+        options: {
+          cwd: this.workingDirectory,
+          env: { ...process.env },
+          stdio: ["ignore", "pipe", "pipe"],
+          detached: false
+        }
+      };
+    }
+    const shell = process.env.SHELL || "/bin/bash";
+    const isZsh = shell.includes("zsh");
+    const envSetup = this.buildUnixEnvSetup(home, isZsh);
+    const fullCommand = envSetup ? `${envSetup} ${baseCommand}` : baseCommand;
+    return {
+      command: shell,
+      args: ["-c", fullCommand],
+      options: {
+        cwd: this.workingDirectory,
+        env: {
+          ...process.env,
+          HOME: home,
+          XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME || `${home}/.config`
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: false
+      }
+    };
+  }
+  buildUnixEnvSetup(home, isZsh) {
+    const parts = [];
+    if (isZsh) {
+      const zshrc = (0, import_path.join)(home, ".zshrc");
+      if ((0, import_fs2.existsSync)(zshrc)) {
+        parts.push(`source "${zshrc}" 2>/dev/null`);
+      }
+    } else {
+      const nvmDirs = [
+        (0, import_path.join)(home, ".nvm"),
+        (0, import_path.join)(home, ".config", "nvm"),
+        process.env.NVM_DIR
+      ].filter(Boolean);
+      for (const nvmDir of nvmDirs) {
+        const nvmSh = (0, import_path.join)(nvmDir, "nvm.sh");
+        if ((0, import_fs2.existsSync)(nvmSh)) {
+          parts.push(`export NVM_DIR="${nvmDir}"; source "${nvmSh}" 2>/dev/null`);
+          break;
+        }
+      }
+      const bashrc = (0, import_path.join)(home, ".bashrc");
+      if ((0, import_fs2.existsSync)(bashrc)) {
+        parts.push(`source "${bashrc}" 2>/dev/null`);
+      }
+    }
+    const brewPaths = ["/opt/homebrew/bin", "/usr/local/bin"];
+    const existingBrewPaths = brewPaths.filter(import_fs2.existsSync);
+    if (existingBrewPaths.length > 0) {
+      parts.push(`export PATH="${existingBrewPaths.join(":")}:$PATH"`);
+    }
+    return parts.length > 0 ? parts.join("; ") + ";" : "";
   }
 };
 
