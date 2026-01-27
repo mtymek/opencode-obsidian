@@ -83,7 +83,7 @@ export class ProcessManager {
       ],
       {
         cwd: this.projectDirectory,
-        env: { ...process.env },
+        env: { ...process.env, NODE_USE_SYSTEM_CA: "1" },
         stdio: ["ignore", "pipe", "pipe"],
         detached: false,
       }
