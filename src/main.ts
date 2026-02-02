@@ -89,11 +89,14 @@ export default class OpenCodePlugin extends Plugin {
       }
     });
 
+    // Register cleanup handlers for when Obsidian quits
+    this.registerCleanupHandlers();
+
     console.log("OpenCode plugin loaded");
   }
 
   async onunload(): Promise<void> {
-    this.stopServer();
+    await this.stopServer();
     this.app.workspace.detachLeavesOfType(OPENCODE_VIEW_TYPE);
   }
 
@@ -184,8 +187,8 @@ export default class OpenCodePlugin extends Plugin {
     return success;
   }
 
-  stopServer(): void {
-    this.processManager.stop();
+  async stopServer(): Promise<void> {
+    await this.processManager.stop();
     new Notice("OpenCode server stopped");
   }
 
@@ -430,5 +433,14 @@ export default class OpenCodePlugin extends Plugin {
     }
     console.log("[OpenCode] Using vault path as project directory:", vaultPath);
     return vaultPath;
+  }
+
+  private registerCleanupHandlers(): void {
+    this.registerEvent(
+      this.app.workspace.on("quit", () => {
+        console.log("[OpenCode] Obsidian quitting - performing sync cleanup");
+        this.stopServer();
+      })
+    );
   }
 }

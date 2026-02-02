@@ -22,6 +22,9 @@ function createTestSettings(port: number): OpenCodeSettings {
     projectDirectory: "",
     startupTimeout: TEST_TIMEOUT_MS,
     defaultViewLocation: "sidebar",
+    injectWorkspaceContext: true,
+    maxNotesInContext: 20,
+    maxSelectionLength: 2000,
   };
 }
 
@@ -47,7 +50,7 @@ beforeAll(async () => {
 // Cleanup after each test
 afterEach(async () => {
   if (currentManager) {
-    currentManager.stop();
+    await currentManager.stop();
     // Give process time to fully terminate
     await new Promise((resolve) => setTimeout(resolve, 500));
     currentManager = null;
@@ -108,7 +111,7 @@ describe("ProcessManager", () => {
       await currentManager.start();
       expect(currentManager.getState()).toBe("running");
 
-      currentManager.stop();
+      await currentManager.stop();
 
       expect(currentManager.getState()).toBe("stopped");
       expect(stateHistory).toContain("stopped");
@@ -151,7 +154,7 @@ describe("ProcessManager", () => {
       expect(currentManager.getState()).toBe("running");
 
       // Stop
-      currentManager.stop();
+      await currentManager.stop();
       expect(currentManager.getState()).toBe("stopped");
 
       // Wait for process to fully terminate
@@ -214,6 +217,121 @@ describe("ProcessManager", () => {
       });
 
       expect(response.ok).toBe(true);
+    });
+  });
+
+  describe("async stop behavior", () => {
+    test("stop returns immediately when no process", async () => {
+      const port = getNextPort();
+      const settings = createTestSettings(port);
+      const stateHistory: ProcessState[] = [];
+
+      currentManager = new ProcessManager(
+        settings,
+        PROJECT_DIR,
+        (state) => stateHistory.push(state)
+      );
+
+      // Stop without starting - should not throw and set state
+      await currentManager.stop();
+
+      expect(currentManager.getState()).toBe("stopped");
+    });
+
+    test("stop completes within timeout when process exits quickly", async () => {
+      const port = getNextPort();
+      const settings = createTestSettings(port);
+
+      currentManager = new ProcessManager(
+        settings,
+        PROJECT_DIR,
+        () => {}
+      );
+
+      await currentManager.start();
+      expect(currentManager.getState()).toBe("running");
+
+      // Stop should complete within 5 seconds (2s SIGTERM wait + 3s SIGKILL wait)
+      const stopStart = Date.now();
+      await currentManager.stop();
+      const stopDuration = Date.now() - stopStart;
+
+      expect(currentManager.getState()).toBe("stopped");
+      // Should complete well before 5 second timeout
+      expect(stopDuration).toBeLessThan(6000);
+    });
+
+    test("process is fully terminated after stop completes", async () => {
+      const port = getNextPort();
+      const settings = createTestSettings(port);
+
+      currentManager = new ProcessManager(
+        settings,
+        PROJECT_DIR,
+        () => {}
+      );
+
+      await currentManager.start();
+
+      const url = currentManager.getUrl();
+      
+      await currentManager.stop();
+
+      // Wait a bit then verify server is not accessible
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+
+      try {
+        const response = await fetch(`${url}/global/health`, {
+          signal: AbortSignal.timeout(1000),
+        });
+        // If we get here, server is still running - test should fail
+        expect(response.ok).toBe(false);
+      } catch (e) {
+        // Expected - server should not be accessible
+        expect(e).toBeDefined();
+      }
+    });
+  });
+
+  describe("error handling", () => {
+    test("handles missing executable gracefully", async () => {
+      const port = getNextPort();
+      const settings = createTestSettings(port);
+      settings.opencodePath = "/nonexistent/path/to/opencode";
+
+      currentManager = new ProcessManager(
+        settings,
+        PROJECT_DIR,
+        () => {}
+      );
+
+      const success = await currentManager.start();
+
+      expect(success).toBe(false);
+      expect(currentManager.getState()).toBe("error");
+      expect(currentManager.getLastError()).toContain("not found");
+    });
+
+    test("handles double stop gracefully", async () => {
+      const port = getNextPort();
+      const settings = createTestSettings(port);
+
+      currentManager = new ProcessManager(
+        settings,
+        PROJECT_DIR,
+        () => {}
+      );
+
+      await currentManager.start();
+      expect(currentManager.getState()).toBe("running");
+
+      // First stop
+      await currentManager.stop();
+      expect(currentManager.getState()).toBe("stopped");
+
+      // Second stop should not throw
+      await currentManager.stop();
+      expect(currentManager.getState()).toBe("stopped");
     });
   });
 });

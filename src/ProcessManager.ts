@@ -85,7 +85,7 @@ export class ProcessManager {
         cwd: this.projectDirectory,
         env: { ...process.env, NODE_USE_SYSTEM_CA: "1" },
         stdio: ["ignore", "pipe", "pipe"],
-        detached: false,
+        detached: true,
       }
     );
 
@@ -133,7 +133,7 @@ export class ProcessManager {
       return false;
     }
 
-    this.stop();
+    await this.stop();
     if (this.earlyExitCode !== null) {
       return this.setError(`Process exited unexpectedly (exit code ${this.earlyExitCode})`);
     }
@@ -143,27 +143,102 @@ export class ProcessManager {
     return this.setError("Server failed to start within timeout");
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (!this.process) {
       this.setState("stopped");
       return;
     }
 
+    const pid = this.process.pid;
     const proc = this.process;
-    console.log("[OpenCode] Stopping process with PID:", proc.pid);
+    
+    if (!pid) {
+      console.log("[OpenCode] No PID available, cleaning up state");
+      this.setState("stopped");
+      this.process = null;
+      return;
+    }
+    
+    console.log("[OpenCode] Stopping server process tree, PID:", pid);
 
     this.setState("stopped");
     this.process = null;
 
-    proc.kill("SIGTERM");
+    await this.killProcessTree(pid, "SIGTERM");
 
-    // Force kill after 2 seconds if still running
-    setTimeout(() => {
-      if (proc.exitCode === null && proc.signalCode === null) {
-        console.log("[OpenCode] Process still running, sending SIGKILL");
-        proc.kill("SIGKILL");
-      }
-    }, 2000);
+    const gracefulExited = await this.waitForProcessExit(proc, 2000);
+
+    if (gracefulExited) {
+      console.log("[OpenCode] Server stopped gracefully");
+      return;
+    }
+
+    console.log("[OpenCode] Process didn't exit gracefully, sending SIGKILL");
+
+    await this.killProcessTree(pid, "SIGKILL");
+
+    // Step 4: Wait for force kill (up to 3 more seconds)
+    const forceExited = await this.waitForProcessExit(proc, 3000);
+
+    if (forceExited) {
+      console.log("[OpenCode] Server stopped with SIGKILL");
+    } else {
+      console.error("[OpenCode] Failed to stop server within timeout");
+    }
+  }
+
+  private async killProcessTree(pid: number, signal: "SIGTERM" | "SIGKILL"): Promise<void> {
+    const platform = process.platform;
+
+    if (platform === "win32") {
+      // Windows: Use taskkill with /T flag to kill process tree
+      await this.execAsync(`taskkill /T /F /PID ${pid}`);
+      return;
+    }
+
+    // Unix: Try process group kill (negative PID)
+    process.kill(-pid, signal);
+    return;
+  }
+
+  private async waitForProcessExit(proc: ChildProcess, timeoutMs: number): Promise<boolean> {
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      return true; // Already exited
+    }
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        cleanup();
+        resolve(false);
+      }, timeoutMs);
+
+      const onExit = () => {
+        cleanup();
+        resolve(true);
+      };
+
+      const cleanup = () => {
+        clearTimeout(timeout);
+        proc.off("exit", onExit);
+        proc.off("error", onExit);
+      };
+
+      proc.once("exit", onExit);
+      proc.once("error", onExit);
+    });
+  }
+
+  private execAsync(command: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const { exec } = require("child_process");
+      exec(command, (error: Error | null) => {
+        if (error) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      });
+    });
   }
 
   private setState(state: ProcessState): void {
