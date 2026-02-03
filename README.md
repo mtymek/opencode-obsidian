@@ -69,3 +69,19 @@ Currently, this is work-in-progress feature with some limitations:
 
 <img src="./assets/plugin_settings.png" alt="Available plugin settings" />
 
+## Windows Troubleshooting
+
+If you see "Executable not found at 'opencode'" despite opencode being installed:
+
+1. Find your opencode.cmd path:
+   ```
+   where opencode.cmd
+   ```
+
+2. Configure the full path in plugin settings:
+   ```
+   C:\Users\{username}\AppData\Roaming\npm\opencode.cmd
+   ```
+
+This is due to Electron/Obsidian not fully inheriting PATH on Windows.
+
