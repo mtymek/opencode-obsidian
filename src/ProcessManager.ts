@@ -38,6 +38,10 @@ export class ProcessManager {
     return this.lastError;
   }
 
+  getPid(): number | null {
+    return this.process?.pid ?? null;
+  }
+
   getUrl(): string {
     const encodedPath = btoa(this.projectDirectory);
     return `http://${this.settings.hostname}:${this.settings.port}/${encodedPath}`;
