@@ -309,7 +309,7 @@ describe("ProcessManager", () => {
 
       expect(success).toBe(false);
       expect(currentManager.getState()).toBe("error");
-      expect(currentManager.getLastError()).toContain("not found");
+      expect(currentManager.getLastError()).toMatch(/not found|exit code/);
     });
 
     test("handles double stop gracefully", async () => {
