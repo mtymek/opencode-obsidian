@@ -1,7 +1,18 @@
 import { spawn, ChildProcess } from "child_process";
+import { existsSync } from "fs";
+import { homedir, platform } from "os";
+import { join } from "path";
 import { OpenCodeSettings } from "./types";
 
 export type ProcessState = "stopped" | "starting" | "running" | "error";
+
+const LINUX_USER_BIN_PATHS = [
+  ".local/bin",
+  ".opencode/bin",
+  ".bun/bin",
+  ".npm-global/bin",
+  ".nvm/versions/node/*/bin",
+];
 
 export class ProcessManager {
   private process: ChildProcess | null = null;
@@ -62,8 +73,10 @@ export class ProcessManager {
       return true;
     }
 
+    const executablePath = this.findOpenCodeExecutable();
+
     console.log("[OpenCode] Starting server:", {
-      opencodePath: this.settings.opencodePath,
+      opencodePath: executablePath,
       port: this.settings.port,
       hostname: this.settings.hostname,
       cwd: this.projectDirectory,
@@ -71,7 +84,7 @@ export class ProcessManager {
     });
 
     this.process = spawn(
-      this.settings.opencodePath,
+      executablePath,
       [
         "serve",
         "--port",
@@ -288,5 +301,42 @@ export class ProcessManager {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private findOpenCodeExecutable(): string {
+    const configuredPath = this.settings.opencodePath;
+
+    if (existsSync(configuredPath)) {
+      return configuredPath;
+    }
+
+    const baseName = configuredPath.split("/").pop() || configuredPath;
+    const homeDir = homedir();
+    const currentPlatform = platform();
+
+    const searchPaths: string[] = [];
+
+    if (currentPlatform === "linux" || currentPlatform === "darwin") {
+      for (const relativePath of LINUX_USER_BIN_PATHS) {
+        if (relativePath.includes("*")) {
+          continue;
+        }
+        searchPaths.push(join(homeDir, relativePath));
+      }
+
+      searchPaths.push("/usr/local/bin");
+      searchPaths.push("/usr/bin");
+    }
+
+    for (const searchPath of searchPaths) {
+      const fullPath = join(searchPath, baseName);
+      if (existsSync(fullPath)) {
+        console.log("[OpenCode] Found executable at:", fullPath);
+        return fullPath;
+      }
+    }
+
+    console.log("[OpenCode] Executable not found in common paths, using configured:", configuredPath);
+    return configuredPath;
   }
 }
