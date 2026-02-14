@@ -5,8 +5,8 @@ describe.skipIf(process.platform === "win32")("PosixProcess", () => {
   const processImpl = new PosixProcess();
 
   describe("verifyCommand", () => {
-    test("returns null for non-absolute commands", async () => {
-      // Non-absolute paths should return null (let spawn handle it)
+    test("returns null for existing commands in PATH", async () => {
+      // 'ls' should exist on all POSIX systems
       const result = await processImpl.verifyCommand("ls");
       expect(result).toBeNull();
     });
@@ -22,6 +22,11 @@ describe.skipIf(process.platform === "win32")("PosixProcess", () => {
       const result = await processImpl.verifyCommand(nonExistentPath);
       expect(result).toContain("Executable not found");
       expect(result).toContain(nonExistentPath);
+    });
+
+    test("returns error for non-existent command in PATH", async () => {
+      const result = await processImpl.verifyCommand("definitely-not-a-real-command-12345");
+      expect(result).toContain("Executable not found");
     });
 
     test("returns error for non-executable file", async () => {

@@ -146,14 +146,14 @@ describe("ServerManager", () => {
       await currentManager.stop();
       expect(currentManager.getState()).toBe("stopped");
 
-      // Wait for process to fully terminate
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      // Wait for process to fully terminate and port to be released
+      await new Promise((resolve) => setTimeout(resolve, 2000));
 
       // Restart
       const secondStart = await currentManager.start();
       expect(secondStart).toBe(true);
       expect(currentManager.getState()).toBe("running");
-    });
+    }, 10000);
 
      test("returns true immediately if already running", async () => {
        const port = getNextPort();

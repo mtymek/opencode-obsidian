@@ -30,11 +30,22 @@ export class WindowsProcess implements OpenCodeProcess {
   }
 
   async verifyCommand(command: string): Promise<string | null> {
-    // Use 'where' command to check if executable exists in PATH
-    try {
-      await this.execAsync(`where "${command}"`);
+    // For absolute paths or relative paths, check file exists first
+    if (command.includes('\\') || command.includes('/') || command.startsWith('.')) {
+      const fs = require('fs');
+      if (!fs.existsSync(command)) {
+        return `Executable not found at '${command}'`;
+      }
       return null;
-    } catch {
+    }
+    
+    // For PATH lookups, use 'where' command
+    try {
+      const { execSync } = require('child_process');
+      execSync(`where "${command}"`, { stdio: 'ignore', timeout: 5000 });
+      return null;
+    } catch (error: any) {
+      // If we can't find it, report as not found
       return `Executable not found at '${command}'`;
     }
   }

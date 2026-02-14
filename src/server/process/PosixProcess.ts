@@ -44,18 +44,30 @@ export class PosixProcess implements OpenCodeProcess {
   }
 
   async verifyCommand(command: string): Promise<string | null> {
-    // Check if command is absolute path - verify it exists and is executable
-    if (command.startsWith('/') || command.startsWith('./')) {
+    // For absolute paths or relative paths, check file exists first
+    if (command.includes('/') || command.startsWith('.')) {
+      const fs = require('fs');
+      if (!fs.existsSync(command)) {
+        return `Executable not found at '${command}'`;
+      }
+      // Also check it's executable
       try {
-        const fs = require('fs');
         fs.accessSync(command, fs.constants.X_OK);
-        return null;
       } catch {
         return `Executable not found at '${command}'`;
       }
+      return null;
     }
-    // For non-absolute paths, let spawn handle it (will fire ENOENT if not found)
-    return null;
+    
+    // For PATH lookups, use 'command -v' which is POSIX standard
+    try {
+      const { execSync } = require('child_process');
+      execSync(`command -v "${command}"`, { stdio: 'ignore', timeout: 5000 });
+      return null;
+    } catch (error: any) {
+      // If we can't find it, report as not found
+      return `Executable not found at '${command}'`;
+    }
   }
 
   private async killProcessGroup(
