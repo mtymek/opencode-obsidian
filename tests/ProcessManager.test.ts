@@ -309,7 +309,7 @@ describe("ProcessManager", () => {
 
       expect(success).toBe(false);
       expect(currentManager.getState()).toBe("error");
-      expect(currentManager.getLastError()).toContain("not found");
+      expect(currentManager.getLastError()).toContain("Process exited unexpectedly (exit code 127)");
     });
 
     test("handles double stop gracefully", async () => {
