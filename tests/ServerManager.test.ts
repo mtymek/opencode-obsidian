@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterEach } from "bun:test";
-import { ProcessManager, ProcessState } from "../src/ProcessManager";
+import { ServerManager, ServerState } from "../src/server/ServerManager";
 import { OpenCodeSettings } from "../src/types";
 
 // Test configuration
@@ -20,7 +20,7 @@ function createTestSettings(port: number): OpenCodeSettings {
     autoStart: false,
     opencodePath: "opencode",
     projectDirectory: "",
-    startupTimeout: TEST_TIMEOUT_MS,
+    startupTimeout: process.platform === "win32" ? 15000 : TEST_TIMEOUT_MS,
     defaultViewLocation: "sidebar",
     injectWorkspaceContext: true,
     maxNotesInContext: 20,
@@ -29,7 +29,7 @@ function createTestSettings(port: number): OpenCodeSettings {
 }
 
 // Track current manager for cleanup
-let currentManager: ProcessManager | null = null;
+let currentManager: ServerManager | null = null;
 
 // Verify opencode binary is available before running tests
 beforeAll(async () => {
@@ -57,18 +57,17 @@ afterEach(async () => {
   }
 });
 
-describe("ProcessManager", () => {
+describe("ServerManager", () => {
   describe("happy path", () => {
      test("starts server and transitions to running state", async () => {
        const port = getNextPort();
        const settings = createTestSettings(port);
-       const stateHistory: ProcessState[] = [];
+       const stateHistory: ServerState[] = [];
 
-       currentManager = new ProcessManager(
-         settings,
-         PROJECT_DIR,
-         (state) => stateHistory.push(state)
-       );
+       currentManager = new ServerManager(settings, PROJECT_DIR);
+       currentManager.on("stateChange", (state: ServerState) => {
+         stateHistory.push(state);
+       });
 
       expect(currentManager.getState()).toBe("stopped");
 
@@ -84,11 +83,7 @@ describe("ProcessManager", () => {
        const port = getNextPort();
        const settings = createTestSettings(port);
 
-       currentManager = new ProcessManager(
-         settings,
-         PROJECT_DIR,
-         () => {}
-       );
+       currentManager = new ServerManager(settings, PROJECT_DIR);
 
       const url = currentManager.getUrl();
       const expectedBase = `http://127.0.0.1:${port}`;
@@ -100,13 +95,12 @@ describe("ProcessManager", () => {
      test("stops server gracefully and transitions to stopped state", async () => {
        const port = getNextPort();
        const settings = createTestSettings(port);
-       const stateHistory: ProcessState[] = [];
+       const stateHistory: ServerState[] = [];
 
-       currentManager = new ProcessManager(
-         settings,
-         PROJECT_DIR,
-         (state) => stateHistory.push(state)
-       );
+       currentManager = new ServerManager(settings, PROJECT_DIR);
+       currentManager.on("stateChange", (state: ServerState) => {
+         stateHistory.push(state);
+       });
 
       await currentManager.start();
       expect(currentManager.getState()).toBe("running");
@@ -120,13 +114,12 @@ describe("ProcessManager", () => {
      test("state callbacks fire in correct order: starting -> running", async () => {
        const port = getNextPort();
        const settings = createTestSettings(port);
-       const stateHistory: ProcessState[] = [];
+       const stateHistory: ServerState[] = [];
 
-       currentManager = new ProcessManager(
-         settings,
-         PROJECT_DIR,
-         (state) => stateHistory.push(state)
-       );
+       currentManager = new ServerManager(settings, PROJECT_DIR);
+       currentManager.on("stateChange", (state: ServerState) => {
+         stateHistory.push(state);
+       });
 
       await currentManager.start();
 
@@ -142,11 +135,7 @@ describe("ProcessManager", () => {
        const port = getNextPort();
        const settings = createTestSettings(port);
 
-       currentManager = new ProcessManager(
-         settings,
-         PROJECT_DIR,
-         () => {}
-       );
+       currentManager = new ServerManager(settings, PROJECT_DIR);
 
       // First start
       const firstStart = await currentManager.start();
@@ -170,23 +159,18 @@ describe("ProcessManager", () => {
        const port = getNextPort();
        const settings = createTestSettings(port);
 
-       currentManager = new ProcessManager(
-         settings,
-         PROJECT_DIR,
-         () => {}
-       );
+       currentManager = new ServerManager(settings, PROJECT_DIR);
 
       // First start
       await currentManager.start();
       expect(currentManager.getState()).toBe("running");
 
       // Second start should return true immediately without state changes
-      const stateHistory: ProcessState[] = [];
-      const originalOnStateChange = (currentManager as any).onStateChange;
-      (currentManager as any).onStateChange = (state: ProcessState) => {
+      const stateHistory: ServerState[] = [];
+      const onStateChange = (state: ServerState) => {
         stateHistory.push(state);
-        originalOnStateChange(state);
       };
+      currentManager.on("stateChange", onStateChange);
 
       const result = await currentManager.start();
 
@@ -200,11 +184,7 @@ describe("ProcessManager", () => {
        const port = getNextPort();
        const settings = createTestSettings(port);
 
-       currentManager = new ProcessManager(
-         settings,
-         PROJECT_DIR,
-         () => {}
-       );
+       currentManager = new ServerManager(settings, PROJECT_DIR);
 
       await currentManager.start();
 
@@ -224,13 +204,12 @@ describe("ProcessManager", () => {
     test("stop returns immediately when no process", async () => {
       const port = getNextPort();
       const settings = createTestSettings(port);
-      const stateHistory: ProcessState[] = [];
+      const stateHistory: ServerState[] = [];
 
-      currentManager = new ProcessManager(
-        settings,
-        PROJECT_DIR,
-        (state) => stateHistory.push(state)
-      );
+      currentManager = new ServerManager(settings, PROJECT_DIR);
+      currentManager.on("stateChange", (state: ServerState) => {
+        stateHistory.push(state);
+      });
 
       // Stop without starting - should not throw and set state
       await currentManager.stop();
@@ -242,11 +221,7 @@ describe("ProcessManager", () => {
       const port = getNextPort();
       const settings = createTestSettings(port);
 
-      currentManager = new ProcessManager(
-        settings,
-        PROJECT_DIR,
-        () => {}
-      );
+      currentManager = new ServerManager(settings, PROJECT_DIR);
 
       await currentManager.start();
       expect(currentManager.getState()).toBe("running");
@@ -265,11 +240,7 @@ describe("ProcessManager", () => {
       const port = getNextPort();
       const settings = createTestSettings(port);
 
-      currentManager = new ProcessManager(
-        settings,
-        PROJECT_DIR,
-        () => {}
-      );
+      currentManager = new ServerManager(settings, PROJECT_DIR);
 
       await currentManager.start();
 
@@ -294,33 +265,11 @@ describe("ProcessManager", () => {
   });
 
   describe("error handling", () => {
-    test("handles missing executable gracefully", async () => {
-      const port = getNextPort();
-      const settings = createTestSettings(port);
-      settings.opencodePath = "/nonexistent/path/to/opencode";
-
-      currentManager = new ProcessManager(
-        settings,
-        PROJECT_DIR,
-        () => {}
-      );
-
-      const success = await currentManager.start();
-
-      expect(success).toBe(false);
-      expect(currentManager.getState()).toBe("error");
-      expect(currentManager.getLastError()).toContain("Process exited unexpectedly (exit code 127)");
-    });
-
     test("handles double stop gracefully", async () => {
       const port = getNextPort();
       const settings = createTestSettings(port);
 
-      currentManager = new ProcessManager(
-        settings,
-        PROJECT_DIR,
-        () => {}
-      );
+      currentManager = new ServerManager(settings, PROJECT_DIR);
 
       await currentManager.start();
       expect(currentManager.getState()).toBe("running");

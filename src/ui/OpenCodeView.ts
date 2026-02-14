@@ -1,13 +1,13 @@
 import { ItemView, WorkspaceLeaf, setIcon } from "obsidian";
-import { OPENCODE_VIEW_TYPE } from "./types";
-import { OPENCODE_ICON_NAME } from "./icons";
-import type OpenCodePlugin from "./main";
-import { ProcessState } from "./ProcessManager";
+import { OPENCODE_VIEW_TYPE } from "../types";
+import { OPENCODE_ICON_NAME } from "../icons";
+import type OpenCodePlugin from "../main";
+import type { ServerState } from "../server/types";
 
 export class OpenCodeView extends ItemView {
   plugin: OpenCodePlugin;
   private iframeEl: HTMLIFrameElement | null = null;
-  private currentState: ProcessState = "stopped";
+  private currentState: ServerState = "stopped";
   private unsubscribeStateChange: (() => void) | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: OpenCodePlugin) {
@@ -32,13 +32,13 @@ export class OpenCodeView extends ItemView {
     this.contentEl.addClass("opencode-container");
 
     // Subscribe to state changes
-    this.unsubscribeStateChange = this.plugin.onProcessStateChange((state) => {
+    this.unsubscribeStateChange = this.plugin.onServerStateChange((state: ServerState) => {
       this.currentState = state;
       this.updateView();
     });
 
     // Initial render
-    this.currentState = this.plugin.getProcessState();
+    this.currentState = this.plugin.getServerState();
     this.updateView();
 
     // Start server if not running (lazy start) - don't await to avoid blocking view open

@@ -1,25 +1,28 @@
-import { spawn, ChildProcess } from "child_process";
-import { OpenCodeSettings } from "./types";
+import { ChildProcess } from "child_process";
+import { EventEmitter } from "events";
+import { OpenCodeSettings } from "../types";
+import { ServerState } from "./types";
+import { OpenCodeProcess } from "./process/OpenCodeProcess";
+import { WindowsProcess } from "./process/WindowsProcess";
+import { PosixProcess } from "./process/PosixProcess";
 
-export type ProcessState = "stopped" | "starting" | "running" | "error";
+export type { ServerState } from "./types";
 
-export class ProcessManager {
+export class ServerManager extends EventEmitter {
   private process: ChildProcess | null = null;
-  private state: ProcessState = "stopped";
+  private state: ServerState = "stopped";
   private lastError: string | null = null;
   private earlyExitCode: number | null = null;
   private settings: OpenCodeSettings;
   private projectDirectory: string;
-  private onStateChange: (state: ProcessState) => void;
+  private processImpl: OpenCodeProcess;
 
-  constructor(
-    settings: OpenCodeSettings,
-    projectDirectory: string,
-    onStateChange: (state: ProcessState) => void
-  ) {
+  constructor(settings: OpenCodeSettings, projectDirectory: string) {
+    super();
     this.settings = settings;
     this.projectDirectory = projectDirectory;
-    this.onStateChange = onStateChange;
+    this.processImpl =
+      process.platform === "win32" ? new WindowsProcess() : new PosixProcess();
   }
 
   updateSettings(settings: OpenCodeSettings): void {
@@ -28,9 +31,10 @@ export class ProcessManager {
 
   updateProjectDirectory(directory: string): void {
     this.projectDirectory = directory;
+    this.emit("projectDirectoryChanged", directory);
   }
 
-  getState(): ProcessState {
+  getState(): ServerState {
     return this.state;
   }
 
@@ -56,8 +60,17 @@ export class ProcessManager {
       return this.setError("Project directory (vault) not configured");
     }
 
+    // Pre-flight check: verify executable exists
+    const commandError = await this.processImpl.verifyCommand(this.settings.opencodePath);
+    if (commandError) {
+      return this.setError(commandError);
+    }
+
     if (await this.checkServerHealth()) {
-      console.log("[OpenCode] Server already running on port", this.settings.port);
+      console.log(
+        "[OpenCode] Server already running on port",
+        this.settings.port
+      );
       this.setState("running");
       return true;
     }
@@ -70,7 +83,7 @@ export class ProcessManager {
       projectDirectory: this.projectDirectory,
     });
 
-    this.process = spawn(
+    this.process = this.processImpl.start(
       this.settings.opencodePath,
       [
         "serve",
@@ -85,9 +98,6 @@ export class ProcessManager {
         cwd: this.projectDirectory,
         env: { ...process.env, NODE_USE_SYSTEM_CA: "1" },
         stdio: ["ignore", "pipe", "pipe"],
-        shell: true,
-        windowsHide: true,
-        detached: (process.platform !== "win32"),
       }
     );
 
@@ -102,7 +112,9 @@ export class ProcessManager {
     });
 
     this.process.on("exit", (code, signal) => {
-      console.log(`[OpenCode] Process exited with code ${code}, signal ${signal}`);
+      console.log(
+        `[OpenCode] Process exited with code ${code}, signal ${signal}`
+      );
       this.process = null;
 
       if (this.state === "starting" && code !== null && code !== 0) {
@@ -119,7 +131,9 @@ export class ProcessManager {
       this.process = null;
 
       if (err.code === "ENOENT") {
-        this.setError(`Executable not found at '${this.settings.opencodePath}'`);
+        this.setError(
+          `Executable not found at '${this.settings.opencodePath}'`
+        );
       } else {
         this.setError(`Failed to start: ${err.message}`);
       }
@@ -137,7 +151,9 @@ export class ProcessManager {
 
     await this.stop();
     if (this.earlyExitCode !== null) {
-      return this.setError(`Process exited unexpectedly (exit code ${this.earlyExitCode})`);
+      return this.setError(
+        `Process exited unexpectedly (exit code ${this.earlyExitCode})`
+      );
     }
     if (!this.process) {
       return this.setError("Process exited before server became ready");
@@ -151,101 +167,17 @@ export class ProcessManager {
       return;
     }
 
-    const pid = this.process.pid;
     const proc = this.process;
-    
-    if (!pid) {
-      console.log("[OpenCode] No PID available, cleaning up state");
-      this.setState("stopped");
-      this.process = null;
-      return;
-    }
-    
-    console.log("[OpenCode] Stopping server process tree, PID:", pid);
 
     this.setState("stopped");
     this.process = null;
 
-    await this.killProcessTree(pid, "SIGTERM");
-
-    const gracefulExited = await this.waitForProcessExit(proc, 2000);
-
-    if (gracefulExited) {
-      console.log("[OpenCode] Server stopped gracefully");
-      return;
-    }
-
-    console.log("[OpenCode] Process didn't exit gracefully, sending SIGKILL");
-
-    await this.killProcessTree(pid, "SIGKILL");
-
-    // Step 4: Wait for force kill (up to 3 more seconds)
-    const forceExited = await this.waitForProcessExit(proc, 3000);
-
-    if (forceExited) {
-      console.log("[OpenCode] Server stopped with SIGKILL");
-    } else {
-      console.error("[OpenCode] Failed to stop server within timeout");
-    }
+    await this.processImpl.stop(proc);
   }
 
-  private async killProcessTree(pid: number, signal: "SIGTERM" | "SIGKILL"): Promise<void> {
-    const platform = process.platform;
-
-    if (platform === "win32") {
-      // Windows: Use taskkill with /T flag to kill process tree
-      await this.execAsync(`taskkill /T /F /PID ${pid}`);
-      return;
-    }
-
-    // Unix: Try process group kill (negative PID)
-    process.kill(-pid, signal);
-    return;
-  }
-
-  private async waitForProcessExit(proc: ChildProcess, timeoutMs: number): Promise<boolean> {
-    if (proc.exitCode !== null || proc.signalCode !== null) {
-      return true; // Already exited
-    }
-
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        cleanup();
-        resolve(false);
-      }, timeoutMs);
-
-      const onExit = () => {
-        cleanup();
-        resolve(true);
-      };
-
-      const cleanup = () => {
-        clearTimeout(timeout);
-        proc.off("exit", onExit);
-        proc.off("error", onExit);
-      };
-
-      proc.once("exit", onExit);
-      proc.once("error", onExit);
-    });
-  }
-
-  private execAsync(command: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const { exec } = require("child_process");
-      exec(command, (error: Error | null) => {
-        if (error) {
-          reject(error);
-        } else {
-          resolve();
-        }
-      });
-    });
-  }
-
-  private setState(state: ProcessState): void {
+  private setState(state: ServerState): void {
     this.state = state;
-    this.onStateChange(state);
+    this.emit("stateChange", state);
   }
 
   private setError(message: string): false {
