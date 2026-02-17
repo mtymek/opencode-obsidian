@@ -22,8 +22,37 @@ export class WindowsProcess implements OpenCodeProcess {
 
     console.log("[OpenCode] Stopping server process tree, PID:", pid);
 
-    // Use taskkill with /T flag to kill process tree
-    await this.execAsync(`taskkill /T /F /PID ${pid}`);
+    // Method 1: Find and kill child processes (actual node.exe) using PowerShell
+    // This is necessary because shell: true spawns cmd.exe -> node.exe, and
+    // killing cmd.exe leaves node.exe orphaned
+    try {
+      const { execSync } = require("child_process");
+      const output = execSync(
+        `powershell -Command "Get-CimInstance Win32_Process -Filter \\"ParentProcessId=${pid}\\" | Select-Object ProcessId"`,
+        { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }
+      );
+      
+      const lines = output.split("\n").slice(3); // Skip headers
+      for (const line of lines) {
+        const childPid = line.trim();
+        if (childPid && !isNaN(parseInt(childPid))) {
+          try {
+            execSync(`taskkill /F /PID ${childPid}`, { stdio: "ignore" });
+          } catch {
+            // Child may already be gone
+          }
+        }
+      }
+    } catch {
+      // PowerShell lookup failed, continue to other methods
+    }
+
+    // Method 2: Kill the parent process (cmd.exe)
+    try {
+      await this.execAsync(`taskkill /F /PID ${pid}`);
+    } catch {
+      // Parent may already be gone
+    }
 
     // Wait for process to exit
     await this.waitForExit(process, 5000);

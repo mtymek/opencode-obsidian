@@ -18,6 +18,7 @@ export default class OpenCodePlugin extends Plugin {
   private viewManager: ViewManager;
   private cachedIframeUrl: string | null = null;
   private lastBaseUrl: string | null = null;
+  private serverPid: number | null = null;
 
   async onload(): Promise<void> {
     console.log("Loading OpenCode plugin");
@@ -149,8 +150,60 @@ export default class OpenCodePlugin extends Plugin {
 
   async onunload(): Promise<void> {
     this.contextManager.destroy();
-    await this.stopServer();
+    // Use sync cleanup with stored PID - processManager may already be destroyed
+    if (this.serverPid) {
+      this.killPidSync(this.serverPid);
+      this.serverPid = null;
+    } else {
+      await this.stopServer();
+    }
     this.app.workspace.detachLeavesOfType(OPENCODE_VIEW_TYPE);
+  }
+
+  private killPidSync(pid: number): void {
+    try {
+      if (process.platform === "win32") {
+        const { execSync } = require("child_process");
+        
+        // Method 1: Kill child processes (actual node.exe) using PowerShell
+        try {
+          const output = execSync(
+            `powershell -Command "Get-CimInstance Win32_Process -Filter \\"ParentProcessId=${pid}\\" | Select-Object ProcessId"`,
+            { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }
+          );
+          
+          const lines = output.split("\n").slice(3);
+          for (const line of lines) {
+            const childPid = line.trim();
+            if (childPid && !isNaN(parseInt(childPid))) {
+              try {
+                execSync(`taskkill /F /PID ${childPid}`, { stdio: "ignore" });
+              } catch {
+                // Child may already be gone
+              }
+            }
+          }
+        } catch {
+          // PowerShell lookup failed, continue to other methods
+        }
+        
+        // Method 2: Kill the parent process (cmd.exe)
+        try {
+          execSync(`taskkill /F /PID ${pid}`, { stdio: "ignore" });
+        } catch {
+          // Parent may already be gone
+        }
+      } else {
+        // Unix: kill the process group
+        try {
+          process.kill(-pid, "SIGTERM");
+        } catch {
+          process.kill(pid, "SIGTERM");
+        }
+      }
+    } catch {
+      // Process may already be gone
+    }
   }
 
   async loadSettings(): Promise<void> {
@@ -194,6 +247,7 @@ export default class OpenCodePlugin extends Plugin {
   async startServer(): Promise<boolean> {
     const success = await this.processManager.start();
     if (success) {
+      this.serverPid = this.processManager.getPid();
       new Notice("OpenCode server started");
     } else {
       const error = this.processManager.getLastError();
@@ -208,6 +262,7 @@ export default class OpenCodePlugin extends Plugin {
 
   async stopServer(): Promise<void> {
     await this.processManager.stop();
+    this.serverPid = null;
     new Notice("OpenCode server stopped");
   }
 
@@ -287,11 +342,18 @@ export default class OpenCodePlugin extends Plugin {
   }
 
   private registerCleanupHandlers(): void {
-    this.registerEvent(
-      this.app.workspace.on("quit", () => {
-        console.log("[OpenCode] Obsidian quitting - performing sync cleanup");
-        this.stopServer();
-      })
-    );
+    // Hook into window close event for cleanup (more reliable than onunload on Windows)
+    const cleanupHandler = () => {
+      if (this.serverPid) {
+        this.killPidSync(this.serverPid);
+        this.serverPid = null;
+      }
+    };
+    window.addEventListener("beforeunload", cleanupHandler);
+    
+    // Register for cleanup when plugin unloads
+    this.register(() => {
+      window.removeEventListener("beforeunload", cleanupHandler);
+    });
   }
 }
