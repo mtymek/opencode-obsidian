@@ -78,8 +78,8 @@ export class WindowsProcess implements OpenCodeProcess {
     }
 
     // Register beforeunload handler for window close cleanup
-    // Skip in test environment to avoid interfering with test lifecycle
-    if (typeof window !== "undefined" && !process.env.VITEST) {
+    // Skip in CI/test environments to avoid interfering with test lifecycle
+    if (typeof window !== "undefined" && !process.env.CI) {
       window.addEventListener("beforeunload", () => {
         if (WindowsProcess.currentProcess?.pid) {
           WindowsProcess.killProcessSync(WindowsProcess.currentProcess.pid);
