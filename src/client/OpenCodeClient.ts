@@ -33,26 +33,31 @@ export class OpenCodeClient {
   private apiBaseUrl: string;
   private uiBaseUrl: string;
   private projectDirectory: string;
+  private password: string | null = null;
   private trackedSessionId: string | null = null;
   private lastPart: OpenCodePart | null = null;
 
-  constructor(apiBaseUrl: string, uiBaseUrl: string, projectDirectory: string) {
+  constructor(apiBaseUrl: string, uiBaseUrl: string, projectDirectory: string, password?: string) {
     this.apiBaseUrl = this.normalizeBaseUrl(apiBaseUrl);
     this.uiBaseUrl = this.normalizeBaseUrl(uiBaseUrl);
     this.projectDirectory = projectDirectory;
+    this.password = password ?? null;
   }
 
-  updateBaseUrl(apiBaseUrl: string, uiBaseUrl: string, projectDirectory: string): void {
+  updateBaseUrl(apiBaseUrl: string, uiBaseUrl: string, projectDirectory: string, password?: string): void {
     const nextApiUrl = this.normalizeBaseUrl(apiBaseUrl);
     const nextUiUrl = this.normalizeBaseUrl(uiBaseUrl);
+    const nextPassword = password ?? null;
     if (
       nextApiUrl !== this.apiBaseUrl ||
       nextUiUrl !== this.uiBaseUrl ||
-      projectDirectory !== this.projectDirectory
+      projectDirectory !== this.projectDirectory ||
+      nextPassword !== this.password
     ) {
       this.apiBaseUrl = nextApiUrl;
       this.uiBaseUrl = nextUiUrl;
       this.projectDirectory = projectDirectory;
+      this.password = nextPassword;
       this.resetTracking();
     }
   }
@@ -163,12 +168,17 @@ export class OpenCodeClient {
   private async request<T>(method: string, path: string, body?: unknown): Promise<OpenCodeResponse<T>> {
     try {
       const url = `${this.apiBaseUrl}${path}`;
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        "x-opencode-directory": this.projectDirectory,
+      };
+      if (this.password) {
+        headers["Authorization"] = `Basic ${btoa(`opencode:${this.password}`)}`;
+      }
+      
       const response = await fetch(url, {
         method,
-        headers: {
-          "Content-Type": "application/json",
-          "x-opencode-directory": this.projectDirectory,
-        },
+        headers,
         body: body ? JSON.stringify(body) : undefined,
       });
 

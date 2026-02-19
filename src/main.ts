@@ -8,6 +8,7 @@ import { registerOpenCodeIcons, OPENCODE_ICON_NAME } from "./icons";
 import { OpenCodeClient } from "./client/OpenCodeClient";
 import { ContextManager } from "./context/ContextManager";
 import { ExecutableResolver } from "./server/ExecutableResolver";
+import { PasswordManager } from "./security/PasswordManager";
 
 export default class OpenCodePlugin extends Plugin {
   settings: OpenCodeSettings = DEFAULT_SETTINGS;
@@ -18,6 +19,7 @@ export default class OpenCodePlugin extends Plugin {
   private viewManager: ViewManager;
   private cachedIframeUrl: string | null = null;
   private lastBaseUrl: string | null = null;
+  private password: string;
 
   async onload(): Promise<void> {
     console.log("Loading OpenCode plugin");
@@ -30,8 +32,9 @@ export default class OpenCodePlugin extends Plugin {
     await this.attemptAutodetect();
 
     const projectDirectory = this.getProjectDirectory();
+    this.password = PasswordManager.getOrCreatePassword(this.app);
 
-    this.processManager = new ServerManager(this.settings, projectDirectory);
+    this.processManager = new ServerManager(this.settings, projectDirectory, this.password);
     this.processManager.on("stateChange", (state: ServerState) => {
       this.notifyStateChange(state);
     });
@@ -50,7 +53,8 @@ export default class OpenCodePlugin extends Plugin {
     this.openCodeClient = new OpenCodeClient(
       this.getApiBaseUrl(),
       this.getServerUrl(),
-      projectDirectory
+      projectDirectory,
+      this.password
     );
     this.lastBaseUrl = this.getServerUrl();
 
@@ -92,7 +96,12 @@ export default class OpenCodePlugin extends Plugin {
       this,
       this.settings,
       this.processManager,
-      () => this.saveSettings()
+      () => this.saveSettings(),
+      (newPassword: string) => {
+        this.password = newPassword;
+        this.processManager.setPassword(newPassword);
+        this.refreshClientState();
+      }
     ));
 
     this.addRibbonIcon(OPENCODE_ICON_NAME, "OpenCode", () => {
@@ -255,7 +264,7 @@ export default class OpenCodePlugin extends Plugin {
     const nextUiBaseUrl = this.getServerUrl();
     const nextApiBaseUrl = this.getApiBaseUrl();
     const projectDirectory = this.getProjectDirectory();
-    this.openCodeClient.updateBaseUrl(nextApiBaseUrl, nextUiBaseUrl, projectDirectory);
+    this.openCodeClient.updateBaseUrl(nextApiBaseUrl, nextUiBaseUrl, projectDirectory, this.password);
 
     if (this.lastBaseUrl && this.lastBaseUrl !== nextUiBaseUrl) {
       this.cachedIframeUrl = null;
