@@ -12,8 +12,8 @@ describe.skipIf(process.platform === "win32")("PosixProcess", () => {
     });
 
     test("returns null for existing absolute path", async () => {
-      // Use a binary that exists on this system (found via `which ls`)
-      const existingBinary = "/etc/profiles/per-user/mat/bin/ls";
+      // Use a binary that exists on most Unix systems
+      const existingBinary = "/bin/ls";
       const result = await processImpl.verifyCommand(existingBinary);
       expect(result).toBeNull();
     });
