@@ -28,24 +28,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-
       
-      - name: Cache OpenCode binary
-        id: cache-opencode
-        uses: actions/cache@v4
-        with:
-          path: ~/.bun/bin/opencode
-          key: ${{ runner.os }}-opencode-${{ hashFiles('.github/workflows/ci.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-opencode-
-      
       - name: Install dependencies
         run: bun install
       
       - name: Install OpenCode CLI
-        if: steps.cache-opencode.outputs.cache-hit != 'true'
-        run: bun install -g opencode-ai
+        run: |
+          bun install -g opencode-ai
+          echo "$HOME/.bun/bin" >> $GITHUB_PATH
+        shell: bash
       
       - name: Verify OpenCode installation
-        run: opencode --version
+        run: |
+          export PATH="$HOME/.bun/bin:$PATH"
+          opencode --version
+        shell: bash
       
       - name: Type check
         run: bun run tsc -noEmit -skipLibCheck
