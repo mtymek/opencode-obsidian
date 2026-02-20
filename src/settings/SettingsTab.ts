@@ -36,10 +36,6 @@ export class OpenCodeSettingTab extends PluginSettingTab {
     containerEl.createEl("h2", { text: "OpenCode Settings" });
     containerEl.createEl("h3", { text: "Server Configuration" });
 
-    containerEl.createEl("h3", { text: "Security" });
-    const securityContainer = containerEl.createDiv({ cls: "opencode-security-section" });
-    this.renderSecuritySection(securityContainer);
-
     new Setting(containerEl)
       .setName("Port")
       .setDesc("Port number for the OpenCode web server")
