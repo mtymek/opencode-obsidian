@@ -44,7 +44,7 @@ export class ServerManager extends EventEmitter {
   }
 
   getUrl(): string {
-    const encodedPath = btoa(this.projectDirectory);
+    const encodedPath = Buffer.from(this.projectDirectory).toString('base64');
     return `http://${this.settings.hostname}:${this.settings.port}/${encodedPath}`;
   }
 

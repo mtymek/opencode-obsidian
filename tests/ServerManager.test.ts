@@ -89,7 +89,7 @@ describe("ServerManager", () => {
 
       const url = currentManager.getUrl();
       const expectedBase = `http://127.0.0.1:${port}`;
-      const expectedPath = btoa(PROJECT_DIR);
+      const expectedPath = Buffer.from(PROJECT_DIR).toString('base64');
 
       expect(url).toBe(`${expectedBase}/${expectedPath}`);
     });
@@ -283,6 +283,39 @@ describe("ServerManager", () => {
       // Second stop should not throw
       await currentManager.stop();
       expect(currentManager.getState()).toBe("stopped");
+    });
+  });
+
+  describe("Unicode path support", () => {
+    test("getUrl handles Chinese characters in project directory", () => {
+      const settings = createTestSettings(getNextPort());
+      const chinesePath = "C:/用户/Notes";
+      const manager = new ServerManager(settings, chinesePath);
+
+      const url = manager.getUrl();
+
+      expect(url).toContain("http://127.0.0.1:");
+      expect(url).toContain(Buffer.from(chinesePath).toString('base64'));
+    });
+
+    test("getUrl handles Japanese characters in project directory", () => {
+      const settings = createTestSettings(getNextPort());
+      const japanesePath = "/home/ユーザー/ノート";
+      const manager = new ServerManager(settings, japanesePath);
+
+      const url = manager.getUrl();
+
+      expect(url).toContain(Buffer.from(japanesePath).toString('base64'));
+    });
+
+    test("getUrl handles emoji in project directory", () => {
+      const settings = createTestSettings(getNextPort());
+      const emojiPath = "/home/user/📁Notes";
+      const manager = new ServerManager(settings, emojiPath);
+
+      const url = manager.getUrl();
+
+      expect(url).toContain(Buffer.from(emojiPath).toString('base64'));
     });
   });
 });
