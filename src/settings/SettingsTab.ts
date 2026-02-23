@@ -4,6 +4,7 @@ import { homedir } from "os";
 import { OpenCodeSettings, ViewLocation } from "../types";
 import { ServerManager } from "../server/ServerManager";
 import { ExecutableResolver } from "../server/ExecutableResolver";
+import { PasswordManager } from "../security/PasswordManager";
 
 function expandTilde(path: string): string {
   if (path === "~") {
@@ -23,7 +24,8 @@ export class OpenCodeSettingTab extends PluginSettingTab {
     plugin: Plugin,
     private settings: OpenCodeSettings,
     private serverManager: ServerManager,
-    private onSettingsChange: () => Promise<void>
+    private onSettingsChange: () => Promise<void>,
+    private onPasswordRegenerate: (newPassword: string) => void
   ) {
     super(app, plugin);
   }
@@ -94,7 +96,7 @@ export class OpenCodeSettingTab extends PluginSettingTab {
         .setDesc("Custom shell command to start OpenCode.")
         .addTextArea((text) => {
           text
-            .setPlaceholder("opencode serve --port 14096 --hostname 127.0.0.1 --cors app://obsidian.md")
+            .setPlaceholder("opencode serve --port 14096 --hostname 127.0.0.1 --cors app://obsidian.md\nUse $OPENCODE_PASSWORD to inject the server password")
             .setValue(this.settings.customCommand)
             .onChange(async (value) => {
               this.settings.customCommand = value;
@@ -231,6 +233,11 @@ export class OpenCodeSettingTab extends PluginSettingTab {
           })
       );
 
+    containerEl.createEl("h3", { text: "Security" });
+
+    const securitySection = containerEl.createDiv({ cls: "opencode-security-section" });
+    this.renderSecuritySection(securitySection);
+
     containerEl.createEl("h3", { text: "Server Status" });
 
     const statusContainer = containerEl.createDiv({ cls: "opencode-settings-status" });
@@ -272,6 +279,44 @@ export class OpenCodeSettingTab extends PluginSettingTab {
 
     this.serverManager.updateProjectDirectory(expanded);
     await this.onSettingsChange();
+  }
+
+  private renderSecuritySection(container: HTMLElement): void {
+    container.empty();
+    
+    const statusEl = container.createDiv({ cls: "opencode-security-status" });
+    statusEl.createSpan({ text: "Password: " });
+    statusEl.createSpan({
+      text: "[secured]",
+      cls: "opencode-security-badge",
+    });
+    
+    const buttonContainer = container.createDiv({ cls: "opencode-security-buttons" });
+    const regenerateButton = buttonContainer.createEl("button", {
+      text: "Regenerate Password",
+      cls: "mod-warning",
+    });
+    regenerateButton.addEventListener("click", async () => {
+      const wasRunning = this.serverManager.getState() === "running";
+      if (wasRunning) {
+        await this.serverManager.stop();
+      }
+      
+      const newPassword = PasswordManager.regeneratePassword(this.app);
+      
+      this.onPasswordRegenerate(newPassword);
+      
+      if (wasRunning) {
+        await this.serverManager.start();
+      }
+      
+      this.renderSecuritySection(container);
+    });
+    
+    container.createEl("p", {
+      text: "Regenerating password will restart the server if it's running.",
+      cls: "opencode-security-hint",
+    });
   }
 
   private renderServerStatus(container: HTMLElement): void {

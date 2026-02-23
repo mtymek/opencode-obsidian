@@ -285,4 +285,70 @@ describe("ServerManager", () => {
       expect(currentManager.getState()).toBe("stopped");
     });
   });
+
+  describe("password authentication", () => {
+    test("server with password rejects unauthenticated requests", async () => {
+      const port = getNextPort();
+      const settings = createTestSettings(port);
+      const testPassword = "test-password-abc123";
+
+      currentManager = new ServerManager(settings, PROJECT_DIR, testPassword);
+
+      await currentManager.start();
+      expect(currentManager.getState()).toBe("running");
+
+      const url = currentManager.getUrl();
+
+      // Unauthenticated request should fail with 401
+      const response = await fetch(`${url}/global/health`, {
+        signal: AbortSignal.timeout(2000),
+      });
+
+      expect(response.status).toBe(401);
+    }, 30000);
+
+    test("server with password accepts authenticated requests", async () => {
+      const port = getNextPort();
+      const settings = createTestSettings(port);
+      const testPassword = "test-password-xyz789";
+
+      currentManager = new ServerManager(settings, PROJECT_DIR, testPassword);
+
+      await currentManager.start();
+      expect(currentManager.getState()).toBe("running");
+
+      const url = currentManager.getUrl();
+      const authHeader = `Basic ${btoa(`opencode:${testPassword}`)}`;
+
+      // Authenticated request should succeed
+      const response = await fetch(`${url}/global/health`, {
+        headers: { Authorization: authHeader },
+        signal: AbortSignal.timeout(2000),
+      });
+
+      expect(response.ok).toBe(true);
+    }, 30000);
+
+    test("setPassword updates password for subsequent requests", async () => {
+      const port = getNextPort();
+      const settings = createTestSettings(port);
+      const initialPassword = "initial-password";
+
+      currentManager = new ServerManager(settings, PROJECT_DIR, initialPassword);
+
+      await currentManager.start();
+      expect(currentManager.getState()).toBe("running");
+
+      const url = currentManager.getUrl();
+
+      // Verify initial password works
+      const authHeader = `Basic ${btoa(`opencode:${initialPassword}`)}`;
+      const response = await fetch(`${url}/global/health`, {
+        headers: { Authorization: authHeader },
+        signal: AbortSignal.timeout(2000),
+      });
+
+      expect(response.ok).toBe(true);
+    }, 30000);
+  });
 });

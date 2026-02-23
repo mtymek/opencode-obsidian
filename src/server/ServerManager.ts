@@ -17,13 +17,19 @@ export class ServerManager extends EventEmitter {
   private settings: OpenCodeSettings;
   private projectDirectory: string;
   private processImpl: OpenCodeProcess;
+  private password: string | null = null;
 
-  constructor(settings: OpenCodeSettings, projectDirectory: string) {
+  constructor(settings: OpenCodeSettings, projectDirectory: string, password?: string) {
     super();
     this.settings = settings;
     this.projectDirectory = projectDirectory;
+    this.password = password ?? null;
     this.processImpl =
       process.platform === "win32" ? new WindowsProcess() : new PosixProcess();
+  }
+
+  setPassword(password: string): void {
+    this.password = password;
   }
 
   updateSettings(settings: OpenCodeSettings): void {
@@ -66,11 +72,17 @@ export class ServerManager extends EventEmitter {
     let spawnOptions: SpawnOptions;
     
     if (this.settings.useCustomCommand) {
-      // Custom command mode: use custom command directly with shell
-      executablePath = this.settings.customCommand;
+      executablePath = this.settings.customCommand.replace(
+        /\$OPENCODE_PASSWORD/g,
+        this.password ?? ""
+      );
       spawnOptions = {
         cwd: this.projectDirectory,
-        env: { ...process.env, NODE_USE_SYSTEM_CA: "1" },
+        env: { 
+          ...process.env, 
+          NODE_USE_SYSTEM_CA: "1",
+          OPENCODE_SERVER_PASSWORD: this.password ?? "",
+        },
         stdio: ["ignore", "pipe", "pipe"],
         shell: true,
       };
@@ -86,7 +98,11 @@ export class ServerManager extends EventEmitter {
       
       spawnOptions = {
         cwd: this.projectDirectory,
-        env: { ...process.env, NODE_USE_SYSTEM_CA: "1" },
+        env: { 
+          ...process.env, 
+          NODE_USE_SYSTEM_CA: "1",
+          OPENCODE_SERVER_PASSWORD: this.password ?? "",
+        },
         stdio: ["ignore", "pipe", "pipe"],
       };
     }
@@ -224,8 +240,14 @@ export class ServerManager extends EventEmitter {
 
   private async checkServerHealth(): Promise<boolean> {
     try {
+      const headers: Record<string, string> = {};
+      if (this.password) {
+        headers["Authorization"] = `Basic ${btoa(`opencode:${this.password}`)}`;
+      }
+      
       const response = await fetch(`${this.getUrl()}/global/health`, {
         method: "GET",
+        headers,
         signal: AbortSignal.timeout(2000),
       });
       return response.ok;
