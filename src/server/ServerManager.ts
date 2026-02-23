@@ -1,4 +1,6 @@
 import { ChildProcess, SpawnOptions } from "child_process";
+import { existsSync } from "fs";
+import { dirname } from "path";
 import { EventEmitter } from "events";
 import { OpenCodeSettings } from "../types";
 import { ServerState } from "./types";
@@ -43,9 +45,13 @@ export class ServerManager extends EventEmitter {
     return this.lastError;
   }
 
+  getBaseUrl(): string {
+    return `http://${this.settings.hostname}:${this.settings.port}`;
+  }
+
   getUrl(): string {
-    const encodedPath = btoa(this.projectDirectory);
-    return `http://${this.settings.hostname}:${this.settings.port}/${encodedPath}`;
+    const encodedPath = Buffer.from(this.projectDirectory).toString("base64");
+    return `${this.getBaseUrl()}/${encodedPath}`;
   }
 
   async start(): Promise<boolean> {
@@ -77,16 +83,21 @@ export class ServerManager extends EventEmitter {
     } else {
       // Path mode: resolve executable and verify
       executablePath = ExecutableResolver.resolve(this.settings.opencodePath);
-      
+
       // Pre-flight check: verify executable exists (only for path mode)
       const commandError = await this.processImpl.verifyCommand(executablePath);
       if (commandError) {
         return this.setError(commandError);
       }
-      
+
+      // Build enhanced PATH: macOS/Linux GUI apps (Electron) inherit a minimal
+      // PATH that doesn't include Homebrew, nvm, bun, etc.  The opencode script
+      // uses #!/usr/bin/env node, so node must be discoverable via PATH.
+      const enhancedPath = this.buildEnhancedPath(executablePath);
+
       spawnOptions = {
         cwd: this.projectDirectory,
-        env: { ...process.env, NODE_USE_SYSTEM_CA: "1" },
+        env: { ...process.env, NODE_USE_SYSTEM_CA: "1", PATH: enhancedPath },
         stdio: ["ignore", "pipe", "pipe"],
       };
     }
@@ -224,11 +235,13 @@ export class ServerManager extends EventEmitter {
 
   private async checkServerHealth(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.getUrl()}/global/health`, {
+      const response = await fetch(`${this.getBaseUrl()}/global/health`, {
         method: "GET",
         signal: AbortSignal.timeout(2000),
       });
-      return response.ok;
+      if (!response.ok) return false;
+      const data = await response.json();
+      return data?.healthy === true;
     } catch {
       return false;
     }
@@ -255,5 +268,35 @@ export class ServerManager extends EventEmitter {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Build an enhanced PATH for child processes.
+   * macOS/Linux GUI apps (like Obsidian via Electron) inherit a minimal PATH
+   * (e.g. /usr/bin:/bin:/usr/sbin:/sbin) that doesn't include Homebrew, nvm,
+   * bun, etc.  Since the opencode script uses `#!/usr/bin/env node`, the
+   * `node` binary must be discoverable via PATH.
+   */
+  private buildEnhancedPath(resolvedExecutable: string): string {
+    const currentPath = process.env.PATH || "";
+    const extraDirs: string[] = [];
+
+    // Add the directory containing the resolved executable itself
+    try {
+      const binDir = dirname(resolvedExecutable);
+      if (binDir && !currentPath.includes(binDir)) {
+        extraDirs.push(binDir);
+      }
+    } catch { /* ignore */ }
+
+    // Add well-known directories from ExecutableResolver
+    for (const dir of ExecutableResolver.getSearchDirectories()) {
+      if (!currentPath.includes(dir) && existsSync(dir)) {
+        extraDirs.push(dir);
+      }
+    }
+
+    if (extraDirs.length === 0) return currentPath;
+    return [...extraDirs, currentPath].join(":");
   }
 }

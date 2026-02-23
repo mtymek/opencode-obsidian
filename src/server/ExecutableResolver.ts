@@ -66,7 +66,7 @@ export class ExecutableResolver {
   /**
    * Get platform-specific directories to search for executables
    */
-  private static getSearchDirectories(): string[] {
+  static getSearchDirectories(): string[] {
     const currentPlatform = platform();
     const homeDir = homedir();
     const searchDirs: string[] = [];

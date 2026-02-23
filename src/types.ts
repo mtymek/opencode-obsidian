@@ -21,7 +21,7 @@ export const DEFAULT_SETTINGS: OpenCodeSettings = {
   autoStart: false,
   opencodePath: "opencode",
   projectDirectory: "",
-  startupTimeout: 15000,
+  startupTimeout: 120000,
   defaultViewLocation: "sidebar",
   injectWorkspaceContext: false,
   maxNotesInContext: 20,
