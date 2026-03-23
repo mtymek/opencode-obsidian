@@ -1,4 +1,4 @@
-import { Plugin, WorkspaceLeaf, Notice, EventRef, MarkdownView } from "obsidian";
+import { Plugin, Notice } from "obsidian";
 import { OpenCodeSettings, DEFAULT_SETTINGS, OPENCODE_VIEW_TYPE } from "./types";
 import { OpenCodeView } from "./ui/OpenCodeView";
 import { ViewManager } from "./ui/ViewManager";
@@ -25,8 +25,6 @@ export default class OpenCodePlugin extends Plugin {
     registerOpenCodeIcons();
 
     await this.loadSettings();
-
-    // Attempt autodetect if opencodePath is empty and not using custom command
     await this.attemptAutodetect();
 
     const projectDirectory = this.getProjectDirectory();
@@ -36,13 +34,12 @@ export default class OpenCodePlugin extends Plugin {
       this.notifyStateChange(state);
     });
 
-    // Listen for project directory changes and coordinate response
     this.processManager.on("projectDirectoryChanged", async (newDirectory: string) => {
       this.settings.projectDirectory = newDirectory;
       await this.saveData(this.settings);
       this.refreshClientState();
       if (this.getServerState() === "running") {
-        await this.stopServer();
+        await this.stopServer({ silent: true });
         await this.startServer();
       }
     });
@@ -87,13 +84,15 @@ export default class OpenCodePlugin extends Plugin {
       OPENCODE_VIEW_TYPE,
       (leaf) => new OpenCodeView(leaf, this)
     );
-    this.addSettingTab(new OpenCodeSettingTab(
-      this.app,
-      this,
-      this.settings,
-      this.processManager,
-      () => this.saveSettings()
-    ));
+    this.addSettingTab(
+      new OpenCodeSettingTab(
+        this.app,
+        this,
+        this.settings,
+        this.processManager,
+        () => this.saveSettings()
+      )
+    );
 
     this.addRibbonIcon(OPENCODE_ICON_NAME, "OpenCode", () => {
       void this.viewManager.activateView();
@@ -117,7 +116,7 @@ export default class OpenCodePlugin extends Plugin {
       id: "start-opencode-server",
       name: "Start OpenCode server",
       callback: () => {
-        this.startServer();
+        void this.startServer();
       },
     });
 
@@ -125,7 +124,7 @@ export default class OpenCodePlugin extends Plugin {
       id: "stop-opencode-server",
       name: "Stop OpenCode server",
       callback: () => {
-        this.stopServer();
+        void this.stopServer();
       },
     });
 
@@ -149,7 +148,7 @@ export default class OpenCodePlugin extends Plugin {
 
   async onunload(): Promise<void> {
     this.contextManager.destroy();
-    await this.stopServer();
+    await this.stopServer({ silent: true });
     this.app.workspace.detachLeavesOfType(OPENCODE_VIEW_TYPE);
   }
 
@@ -157,12 +156,7 @@ export default class OpenCodePlugin extends Plugin {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
   }
 
-  /**
-   * Attempt to autodetect opencode executable on startup
-   * Triggers when opencodePath is empty and useCustomCommand is false
-   */
   private async attemptAutodetect(): Promise<void> {
-    // Only autodetect if path is empty and not using custom command mode
     if (this.settings.opencodePath || this.settings.useCustomCommand) {
       return;
     }
@@ -170,8 +164,7 @@ export default class OpenCodePlugin extends Plugin {
     console.log("[OpenCode] Attempting to autodetect opencode executable...");
 
     const detectedPath = ExecutableResolver.resolve("opencode");
-    
-    // Check if a different path was found (not the fallback)
+
     if (detectedPath && detectedPath !== "opencode") {
       console.log("[OpenCode] Autodetected opencode at:", detectedPath);
       this.settings.opencodePath = detectedPath;
@@ -179,7 +172,6 @@ export default class OpenCodePlugin extends Plugin {
       new Notice(`OpenCode executable found at ${detectedPath}`);
     } else {
       console.log("[OpenCode] Could not autodetect opencode executable");
-      new Notice("Could not find opencode. Please check Settings");
     }
   }
 
@@ -191,24 +183,37 @@ export default class OpenCodePlugin extends Plugin {
     this.viewManager.updateSettings(this.settings);
   }
 
-  async startServer(): Promise<boolean> {
+  async startServer(options?: { silent?: boolean }): Promise<boolean> {
+    const currentState = this.getServerState();
+    if (currentState === "running" || currentState === "starting") {
+      return true;
+    }
+
     const success = await this.processManager.start();
-    if (success) {
-      new Notice("OpenCode server started");
-    } else {
-      const error = this.processManager.getLastError();
-      if (error) {
-        new Notice(`OpenCode failed to start: ${error}`, 10000); // Show for 10 seconds
+    if (!options?.silent) {
+      if (success) {
+        new Notice("OpenCode server started");
       } else {
-        new Notice("OpenCode failed to start. Check Settings for details.", 5000);
+        const error = this.processManager.getLastError();
+        if (error) {
+          new Notice(`OpenCode failed to start: ${error}`, 10000);
+        } else {
+          new Notice("OpenCode failed to start. Check Settings for details.", 5000);
+        }
       }
     }
     return success;
   }
 
-  async stopServer(): Promise<void> {
+  async stopServer(options?: { silent?: boolean }): Promise<void> {
+    if (this.getServerState() === "stopped") {
+      return;
+    }
+
     await this.processManager.stop();
-    new Notice("OpenCode server stopped");
+    if (!options?.silent) {
+      new Notice("OpenCode server stopped");
+    }
   }
 
   getServerState(): ServerState {
@@ -277,7 +282,7 @@ export default class OpenCodePlugin extends Plugin {
       console.log("[OpenCode] Using project directory from settings:", this.settings.projectDirectory);
       return this.settings.projectDirectory;
     }
-    const adapter = this.app.vault.adapter as any;
+    const adapter = this.app.vault.adapter as { basePath?: string };
     const vaultPath = adapter.basePath || "";
     if (!vaultPath) {
       console.warn("[OpenCode] Warning: Could not determine vault path");
@@ -290,7 +295,7 @@ export default class OpenCodePlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("quit", () => {
         console.log("[OpenCode] Obsidian quitting - performing sync cleanup");
-        this.stopServer();
+        void this.stopServer({ silent: true });
       })
     );
   }

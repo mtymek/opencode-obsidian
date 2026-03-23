@@ -31,30 +31,25 @@ export class OpenCodeView extends ItemView {
     this.contentEl.empty();
     this.contentEl.addClass("opencode-container");
 
-    // Subscribe to state changes
     this.unsubscribeStateChange = this.plugin.onServerStateChange((state: ServerState) => {
       this.currentState = state;
       this.updateView();
     });
 
-    // Initial render
     this.currentState = this.plugin.getServerState();
     this.updateView();
 
-    // Start server if not running (lazy start) - don't await to avoid blocking view open
     if (this.currentState === "stopped") {
-      this.plugin.startServer();
+      void this.plugin.startServer();
     }
   }
 
   async onClose(): Promise<void> {
-    // Unsubscribe from state changes to prevent memory leak
     if (this.unsubscribeStateChange) {
       this.unsubscribeStateChange();
       this.unsubscribeStateChange = null;
     }
-    
-    // Clean up iframe
+
     if (this.iframeEl) {
       const iframeUrl = this.iframeEl.src;
       if (iframeUrl.includes("/session/")) {
@@ -103,7 +98,7 @@ export class OpenCodeView extends ItemView {
       cls: "mod-cta",
     });
     startButton.addEventListener("click", () => {
-      this.plugin.startServer();
+      void this.plugin.startServer();
     });
   }
 
@@ -134,10 +129,29 @@ export class OpenCodeView extends ItemView {
     setIcon(iconEl, OPENCODE_ICON_NAME);
     titleSection.createSpan({ text: "OpenCode" });
 
+    const subtitleEl = headerEl.createDiv({ cls: "opencode-header-subtitle" });
+    subtitleEl.setText(this.plugin.getProjectDirectory() || "Vault root");
+
     const actionsEl = headerEl.createDiv({ cls: "opencode-header-actions" });
 
+    const refreshContextButton = actionsEl.createEl("button", {
+      attr: { "aria-label": "Refresh workspace context", title: "Refresh workspace context" },
+    });
+    setIcon(refreshContextButton, "sparkles");
+    refreshContextButton.addEventListener("click", () => {
+      this.plugin.refreshContextForView(this);
+    });
+
+    const openBrowserButton = actionsEl.createEl("button", {
+      attr: { "aria-label": "Open in browser", title: "Open in browser" },
+    });
+    setIcon(openBrowserButton, "external-link");
+    openBrowserButton.addEventListener("click", () => {
+      window.open(this.iframeEl?.src ?? this.plugin.getServerUrl(), "_blank");
+    });
+
     const reloadButton = actionsEl.createEl("button", {
-      attr: { "aria-label": "Reload" },
+      attr: { "aria-label": "Reload", title: "Reload" },
     });
     setIcon(reloadButton, "refresh-cw");
     reloadButton.addEventListener("click", () => {
@@ -145,11 +159,11 @@ export class OpenCodeView extends ItemView {
     });
 
     const stopButton = actionsEl.createEl("button", {
-      attr: { "aria-label": "Stop server" },
+      attr: { "aria-label": "Stop server", title: "Stop server" },
     });
     setIcon(stopButton, "square");
     stopButton.addEventListener("click", () => {
-      this.plugin.stopServer();
+      void this.plugin.stopServer();
     });
 
     const iframeContainer = this.contentEl.createDiv({
@@ -204,7 +218,7 @@ export class OpenCodeView extends ItemView {
     setIcon(iconEl, "alert-circle");
 
     statusContainer.createEl("h3", { text: "Failed to start OpenCode" });
-    
+
     const errorMessage = this.plugin.getLastError();
     if (errorMessage) {
       statusContainer.createEl("p", {
@@ -227,15 +241,18 @@ export class OpenCodeView extends ItemView {
       cls: "mod-cta",
     });
     retryButton.addEventListener("click", () => {
-      this.plugin.startServer();
+      void this.plugin.startServer();
     });
 
     const settingsButton = buttonContainer.createEl("button", {
       text: "Open Settings",
     });
     settingsButton.addEventListener("click", () => {
-      (this.app as any).setting.open();
-      (this.app as any).setting.openTabById("obsidian-opencode");
+      const appWithSettings = this.app as unknown as {
+        setting: { open: () => void; openTabById: (id: string) => void };
+      };
+      appWithSettings.setting.open();
+      appWithSettings.setting.openTabById("obsidian-opencode");
     });
   }
 
@@ -243,7 +260,7 @@ export class OpenCodeView extends ItemView {
     if (this.iframeEl) {
       const src = this.iframeEl.src;
       this.iframeEl.src = "about:blank";
-      setTimeout(() => {
+      window.setTimeout(() => {
         if (this.iframeEl) {
           this.iframeEl.src = src;
         }

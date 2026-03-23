@@ -17,6 +17,8 @@ export class ServerManager extends EventEmitter {
   private settings: OpenCodeSettings;
   private projectDirectory: string;
   private processImpl: OpenCodeProcess;
+  private startPromise: Promise<boolean> | null = null;
+  private stopPromise: Promise<void> | null = null;
 
   constructor(settings: OpenCodeSettings, projectDirectory: string) {
     super();
@@ -44,11 +46,52 @@ export class ServerManager extends EventEmitter {
   }
 
   getUrl(): string {
-    const encodedPath = Buffer.from(this.projectDirectory).toString('base64');
+    const encodedPath = Buffer.from(this.projectDirectory).toString("base64");
     return `http://${this.settings.hostname}:${this.settings.port}/${encodedPath}`;
   }
 
   async start(): Promise<boolean> {
+    if (this.state === "running") {
+      return true;
+    }
+
+    if (this.startPromise) {
+      return this.startPromise;
+    }
+
+    if (this.stopPromise) {
+      await this.stopPromise;
+    }
+
+    this.startPromise = this.startInternal();
+
+    try {
+      return await this.startPromise;
+    } finally {
+      this.startPromise = null;
+    }
+  }
+
+  async stop(): Promise<void> {
+    if (this.stopPromise) {
+      await this.stopPromise;
+      return;
+    }
+
+    if (this.startPromise && this.state === "starting" && !this.process) {
+      await this.startPromise.catch(() => undefined);
+    }
+
+    this.stopPromise = this.stopInternal();
+
+    try {
+      await this.stopPromise;
+    } finally {
+      this.stopPromise = null;
+    }
+  }
+
+  private async startInternal(): Promise<boolean> {
     if (this.state === "running" || this.state === "starting") {
       return true;
     }
@@ -61,34 +104,9 @@ export class ServerManager extends EventEmitter {
       return this.setError("Project directory (vault) not configured");
     }
 
-    // Determine execution mode and resolve executable path
-    let executablePath: string;
-    let spawnOptions: SpawnOptions;
-    
-    if (this.settings.useCustomCommand) {
-      // Custom command mode: use custom command directly with shell
-      executablePath = this.settings.customCommand;
-      spawnOptions = {
-        cwd: this.projectDirectory,
-        env: { ...process.env, NODE_USE_SYSTEM_CA: "1" },
-        stdio: ["ignore", "pipe", "pipe"],
-        shell: true,
-      };
-    } else {
-      // Path mode: resolve executable and verify
-      executablePath = ExecutableResolver.resolve(this.settings.opencodePath);
-      
-      // Pre-flight check: verify executable exists (only for path mode)
-      const commandError = await this.processImpl.verifyCommand(executablePath);
-      if (commandError) {
-        return this.setError(commandError);
-      }
-      
-      spawnOptions = {
-        cwd: this.projectDirectory,
-        env: { ...process.env, NODE_USE_SYSTEM_CA: "1" },
-        stdio: ["ignore", "pipe", "pipe"],
-      };
+    const execution = await this.prepareExecution();
+    if (!execution) {
+      return false;
     }
 
     if (await this.checkServerHealth()) {
@@ -102,77 +120,22 @@ export class ServerManager extends EventEmitter {
 
     console.log("[OpenCode] Starting server:", {
       mode: this.settings.useCustomCommand ? "custom" : "path",
-      command: executablePath,
+      command: execution.executablePath,
       port: this.settings.port,
       hostname: this.settings.hostname,
       cwd: this.projectDirectory,
       projectDirectory: this.projectDirectory,
     });
 
-    if (this.settings.useCustomCommand) {
-      // Custom command mode: spawn with shell, no args appended
-      this.process = this.processImpl.start(
-        executablePath,
-        [], // User controls all arguments in custom command
-        spawnOptions
-      );
-    } else {
-      // Path mode: spawn with default arguments
-      this.process = this.processImpl.start(
-        executablePath,
-        [
-          "serve",
-          "--port",
-          this.settings.port.toString(),
-          "--hostname",
-          this.settings.hostname,
-          "--cors",
-          "app://obsidian.md",
-        ],
-        spawnOptions
-      );
-    }
+    this.process = this.processImpl.start(
+      execution.executablePath,
+      execution.args,
+      execution.spawnOptions
+    );
 
     console.log("[OpenCode] Process spawned with PID:", this.process.pid);
 
-    this.process.stdout?.on("data", (data) => {
-      console.log("[OpenCode]", data.toString().trim());
-    });
-
-    this.process.stderr?.on("data", (data) => {
-      console.error("[OpenCode Error]", data.toString().trim());
-    });
-
-    this.process.on("exit", (code, signal) => {
-      console.log(
-        `[OpenCode] Process exited with code ${code}, signal ${signal}`
-      );
-      this.process = null;
-
-      if (this.state === "starting" && code !== null && code !== 0) {
-        this.earlyExitCode = code;
-      }
-
-      if (this.state === "running") {
-        this.setState("stopped");
-      }
-    });
-
-    this.process.on("error", (err: NodeJS.ErrnoException) => {
-      console.error("[OpenCode] Failed to start process:", err);
-      this.process = null;
-
-      if (err.code === "ENOENT") {
-        const command = this.settings.useCustomCommand 
-          ? this.settings.customCommand 
-          : this.settings.opencodePath;
-        this.setError(
-          `Executable not found: '${command}'`
-        );
-      } else {
-        this.setError(`Failed to start: ${err.message}`);
-      }
-    });
+    this.attachProcessListeners(this.process);
 
     const ready = await this.waitForServerOrExit(this.settings.startupTimeout);
     if (ready) {
@@ -184,30 +147,127 @@ export class ServerManager extends EventEmitter {
       return false;
     }
 
+    const processExited = !this.process;
     await this.stop();
+
     if (this.earlyExitCode !== null) {
       return this.setError(
         `Process exited unexpectedly (exit code ${this.earlyExitCode})`
       );
     }
-    if (!this.process) {
+    if (processExited) {
       return this.setError("Process exited before server became ready");
     }
     return this.setError("Server failed to start within timeout");
   }
 
-  async stop(): Promise<void> {
+  private async stopInternal(): Promise<void> {
     if (!this.process) {
       this.setState("stopped");
       return;
     }
 
     const proc = this.process;
-
-    this.setState("stopped");
     this.process = null;
+    this.setState("stopped");
 
     await this.processImpl.stop(proc);
+  }
+
+  private async prepareExecution(): Promise<{
+    executablePath: string;
+    args: string[];
+    spawnOptions: SpawnOptions;
+  } | null> {
+    let executablePath: string;
+    let spawnOptions: SpawnOptions;
+    let args: string[];
+
+    if (this.settings.useCustomCommand) {
+      executablePath = this.settings.customCommand.trim();
+      if (!executablePath) {
+        this.setError("Custom command is empty. Update Settings and try again.");
+        return null;
+      }
+      spawnOptions = {
+        cwd: this.projectDirectory,
+        env: { ...process.env, NODE_USE_SYSTEM_CA: "1" },
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: true,
+      };
+      args = [];
+    } else {
+      executablePath = ExecutableResolver.resolve(this.settings.opencodePath);
+
+      const commandError = await this.processImpl.verifyCommand(executablePath);
+      if (commandError) {
+        this.setError(commandError);
+        return null;
+      }
+
+      spawnOptions = {
+        cwd: this.projectDirectory,
+        env: { ...process.env, NODE_USE_SYSTEM_CA: "1" },
+        stdio: ["ignore", "pipe", "pipe"],
+      };
+      args = [
+        "serve",
+        "--port",
+        this.settings.port.toString(),
+        "--hostname",
+        this.settings.hostname,
+        "--cors",
+        "app://obsidian.md",
+      ];
+    }
+
+    return {
+      executablePath,
+      args,
+      spawnOptions,
+    };
+  }
+
+  private attachProcessListeners(process: ChildProcess): void {
+    process.stdout?.on("data", (data) => {
+      console.log("[OpenCode]", data.toString().trim());
+    });
+
+    process.stderr?.on("data", (data) => {
+      console.error("[OpenCode Error]", data.toString().trim());
+    });
+
+    process.on("exit", (code, signal) => {
+      console.log(
+        `[OpenCode] Process exited with code ${code}, signal ${signal}`
+      );
+
+      const exitedDuringStartup = this.state === "starting";
+      this.process = null;
+
+      if (exitedDuringStartup && code !== null && code !== 0) {
+        this.earlyExitCode = code;
+      }
+
+      if (this.state === "running") {
+        this.setState("stopped");
+      }
+    });
+
+    process.on("error", (err: NodeJS.ErrnoException) => {
+      console.error("[OpenCode] Failed to start process:", err);
+      this.process = null;
+
+      if (err.code === "ENOENT") {
+        const command = this.settings.useCustomCommand
+          ? this.settings.customCommand
+          : this.settings.opencodePath;
+        this.setError(`Executable not found: '${command}'`);
+        return;
+      }
+
+      this.setError(`Failed to start: ${err.message}`);
+    });
   }
 
   private setState(state: ServerState): void {
