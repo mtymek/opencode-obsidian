@@ -2,7 +2,7 @@ import { App, Plugin, PluginSettingTab, Setting, Notice } from "obsidian";
 import { existsSync, statSync } from "fs";
 import { homedir } from "os";
 import { OpenCodeSettings, ViewLocation } from "../types";
-import { ServerManager } from "../server/ServerManager";
+import { ServerManager, ServerState } from "../server/ServerManager";
 import { ExecutableResolver } from "../server/ExecutableResolver";
 
 function expandTilde(path: string): string {
@@ -17,6 +17,12 @@ function expandTilde(path: string): string {
 
 export class OpenCodeSettingTab extends PluginSettingTab {
   private validateTimeout: ReturnType<typeof setTimeout> | null = null;
+  private statusContainer: HTMLElement | null = null;
+  private handleServerStateChange = (): void => {
+    if (this.statusContainer) {
+      this.renderServerStatus(this.statusContainer);
+    }
+  };
 
   constructor(
     app: App,
@@ -26,6 +32,11 @@ export class OpenCodeSettingTab extends PluginSettingTab {
     private onSettingsChange: () => Promise<void>
   ) {
     super(app, plugin);
+    this.serverManager.on("stateChange", this.handleServerStateChange);
+  }
+
+  hide(): void {
+    this.statusContainer = null;
   }
 
   display(): void {
@@ -46,6 +57,7 @@ export class OpenCodeSettingTab extends PluginSettingTab {
             if (!isNaN(port) && port > 0 && port < 65536) {
               this.settings.port = port;
               await this.onSettingsChange();
+              this.renderServerStatusIfAvailable();
             }
           })
       );
@@ -60,6 +72,21 @@ export class OpenCodeSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.settings.hostname = value || "127.0.0.1";
             await this.onSettingsChange();
+            this.renderServerStatusIfAvailable();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Startup timeout")
+      .setDesc("How long to wait for OpenCode to become healthy before reporting a startup failure")
+      .addSlider((slider) =>
+        slider
+          .setLimits(5, 120, 5)
+          .setValue(Math.round(this.settings.startupTimeout / 1000))
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.settings.startupTimeout = value * 1000;
+            await this.onSettingsChange();
           })
       );
 
@@ -72,16 +99,15 @@ export class OpenCodeSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.settings.useCustomCommand = value;
             await this.onSettingsChange();
-            // Re-render to show/hide appropriate fields
             this.display();
           })
       );
-    
+
     const descEl = customCmdSetting.descEl;
     descEl.createEl("br");
     const linkEl = descEl.createEl("a", {
       text: "Learn more",
-      href: "https://github.com/mtymek/opencode-obsidian#custom-command-mode"
+      href: "https://github.com/mtymek/opencode-obsidian#custom-command-mode",
     });
     linkEl.addEventListener("click", (e) => {
       e.preventDefault();
@@ -107,6 +133,7 @@ export class OpenCodeSettingTab extends PluginSettingTab {
     } else {
       const pathSetting = new Setting(containerEl)
         .setName("OpenCode executable path")
+        .setDesc("Use a full path if Obsidian cannot find the CLI from your shell environment.")
         .addText((text) =>
           text
             .setPlaceholder("opencode")
@@ -116,22 +143,19 @@ export class OpenCodeSettingTab extends PluginSettingTab {
               await this.onSettingsChange();
             })
         );
-      
+
       pathSetting.addButton((button) => {
-        button
-          .setButtonText("Autodetect")
-          .onClick(async () => {
-            const detectedPath = ExecutableResolver.resolve("opencode");
-            if (detectedPath && detectedPath !== "opencode") {
-              this.settings.opencodePath = detectedPath;
-              await this.onSettingsChange();
-              // Refresh the text input
-              this.display();
-              new Notice(`OpenCode executable found at ${detectedPath}`);
-            } else {
-              new Notice("Could not find opencode. Please check your installation.");
-            }
-          });
+        button.setButtonText("Autodetect").onClick(async () => {
+          const detectedPath = ExecutableResolver.resolve("opencode");
+          if (detectedPath && detectedPath !== "opencode") {
+            this.settings.opencodePath = detectedPath;
+            await this.onSettingsChange();
+            this.display();
+            new Notice(`OpenCode executable found at ${detectedPath}`);
+          } else {
+            new Notice("Could not find opencode. Please check your installation.");
+          }
+        });
       });
     }
 
@@ -145,7 +169,6 @@ export class OpenCodeSettingTab extends PluginSettingTab {
           .setPlaceholder("/path/to/project or ~/project")
           .setValue(this.settings.projectDirectory)
           .onChange((value) => {
-            // Debounce validation to avoid spamming notices on every keypress
             if (this.validateTimeout) {
               clearTimeout(this.validateTimeout);
             }
@@ -233,22 +256,32 @@ export class OpenCodeSettingTab extends PluginSettingTab {
 
     containerEl.createEl("h3", { text: "Server Status" });
 
-    const statusContainer = containerEl.createDiv({ cls: "opencode-settings-status" });
-    this.renderServerStatus(statusContainer);
+    this.statusContainer = containerEl.createDiv({ cls: "opencode-settings-status" });
+    this.renderServerStatus(this.statusContainer);
+  }
+
+  private renderServerStatusIfAvailable(): void {
+    if (this.statusContainer) {
+      this.renderServerStatus(this.statusContainer);
+    }
   }
 
   private async validateAndSetProjectDirectory(value: string): Promise<void> {
     const trimmed = value.trim();
 
-    // Empty value is valid - means use vault root
     if (!trimmed) {
+      this.settings.projectDirectory = "";
       this.serverManager.updateProjectDirectory("");
       await this.onSettingsChange();
+      this.renderServerStatusIfAvailable();
       return;
     }
 
-    // Validate absolute path (supports ~, /, and Windows drive letters)
-    if (!trimmed.startsWith("/") && !trimmed.startsWith("~") && !trimmed.match(/^[A-Za-z]:\\/)) {
+    if (
+      !trimmed.startsWith("/") &&
+      !trimmed.startsWith("~") &&
+      !trimmed.match(/^[A-Za-z]:\\/)
+    ) {
       new Notice("Project directory must be an absolute path (or start with ~)");
       return;
     }
@@ -270,22 +303,24 @@ export class OpenCodeSettingTab extends PluginSettingTab {
       return;
     }
 
+    this.settings.projectDirectory = expanded;
     this.serverManager.updateProjectDirectory(expanded);
     await this.onSettingsChange();
+    this.renderServerStatusIfAvailable();
   }
 
   private renderServerStatus(container: HTMLElement): void {
     container.empty();
 
     const state = this.serverManager.getState();
-    const statusText = {
+    const statusText: Record<ServerState, string> = {
       stopped: "Stopped",
       starting: "Starting...",
       running: "Running",
       error: "Error",
     };
 
-    const statusClass = {
+    const statusClass: Record<ServerState, string> = {
       stopped: "status-stopped",
       starting: "status-starting",
       running: "status-running",
@@ -299,13 +334,19 @@ export class OpenCodeSettingTab extends PluginSettingTab {
       cls: `opencode-status-badge ${statusClass[state]}`,
     });
 
+    const projectDirectoryEl = container.createDiv({ cls: "opencode-status-line" });
+    projectDirectoryEl.createSpan({ text: "Project: " });
+    projectDirectoryEl.createSpan({
+      text: this.settings.projectDirectory || "Vault root",
+    });
+
     if (state === "error") {
       const errorMsg = this.serverManager.getLastError();
       if (errorMsg) {
         const errorEl = container.createDiv({ cls: "opencode-error-details" });
         errorEl.createEl("div", {
           text: errorMsg,
-          cls: "opencode-error-text"
+          cls: "opencode-error-text",
         });
       }
     }
@@ -332,6 +373,7 @@ export class OpenCodeSettingTab extends PluginSettingTab {
         cls: "mod-cta",
       });
       startButton.addEventListener("click", async () => {
+        startButton.disabled = true;
         await this.serverManager.start();
         this.renderServerStatus(container);
       });
@@ -341,8 +383,9 @@ export class OpenCodeSettingTab extends PluginSettingTab {
       const stopButton = buttonContainer.createEl("button", {
         text: "Stop Server",
       });
-      stopButton.addEventListener("click", () => {
-        this.serverManager.stop();
+      stopButton.addEventListener("click", async () => {
+        stopButton.disabled = true;
+        await this.serverManager.stop();
         this.renderServerStatus(container);
       });
 
@@ -351,7 +394,8 @@ export class OpenCodeSettingTab extends PluginSettingTab {
         cls: "mod-warning",
       });
       restartButton.addEventListener("click", async () => {
-        this.serverManager.stop();
+        restartButton.disabled = true;
+        await this.serverManager.stop();
         await this.serverManager.start();
         this.renderServerStatus(container);
       });

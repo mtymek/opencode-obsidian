@@ -73,7 +73,7 @@ Example:
 opencode serve --port 14096 --hostname 127.0.0.1 --cors app://obsidian.md
 ```
 
-Other settings (port, hostname, auto-start, view location, context injection) are available through the settings UI and are self-explanatory.
+Other settings (port, hostname, startup timeout, auto-start, view location, context injection) are available through the settings UI. Startup timeout is especially useful on slower machines or after OpenCode upgrades that trigger migrations.
 
 ### Context injection (experimental)
 

@@ -29,12 +29,15 @@ type OpenCodeSession = {
 
 type OpenCodeResponse<T> = T | { data?: T } | { message?: T } | null;
 
+const REQUEST_TIMEOUT_MS = 10000;
+
 export class OpenCodeClient {
   private apiBaseUrl: string;
   private uiBaseUrl: string;
   private projectDirectory: string;
   private trackedSessionId: string | null = null;
   private lastPart: OpenCodePart | null = null;
+  private lastContextText: string | null = null;
 
   constructor(apiBaseUrl: string, uiBaseUrl: string, projectDirectory: string) {
     this.apiBaseUrl = this.normalizeBaseUrl(apiBaseUrl);
@@ -60,6 +63,7 @@ export class OpenCodeClient {
   resetTracking(): void {
     this.trackedSessionId = null;
     this.lastPart = null;
+    this.lastContextText = null;
   }
 
   getSessionUrl(sessionId: string): string {
@@ -72,8 +76,9 @@ export class OpenCodeClient {
   }
 
   async createSession(): Promise<string | null> {
+    const title = this.projectDirectory.split(/[\\/]/).filter(Boolean).pop() || "Obsidian";
     const result = await this.request<OpenCodeSession>("POST", "/session", {
-      title: "Obsidian",
+      title,
     });
     const session = this.unwrap(result);
     return session?.id ?? null;
@@ -91,13 +96,24 @@ export class OpenCodeClient {
     this.trackedSessionId = sessionId;
 
     if (!contextText) {
-      await this.ignorePreviousPart();
+      if (this.lastContextText === null && !this.lastPart) {
+        return;
+      }
+      const ignored = await this.ignorePreviousPart();
+      if (ignored) {
+        this.lastContextText = null;
+      }
+      return;
+    }
+
+    if (contextText === this.lastContextText) {
       return;
     }
 
     if (this.lastPart) {
       const updated = await this.updatePart(this.lastPart, { text: contextText });
       if (updated) {
+        this.lastContextText = contextText;
         return;
       }
       await this.ignorePreviousPart();
@@ -106,6 +122,7 @@ export class OpenCodeClient {
     const message = await this.sendPrompt(sessionId, contextText);
     if (message?.info?.id) {
       this.lastPart = message.parts?.[0] ?? null;
+      this.lastContextText = contextText;
     }
   }
 
@@ -118,9 +135,6 @@ export class OpenCodeClient {
         parts: [{ type: "text", text: contextText }],
       }
     );
-
-    console.log("[OpenCode] Injected context message");
-    console.log(contextText)
 
     const message = this.unwrap(result);
     if (!message) {
@@ -141,6 +155,12 @@ export class OpenCodeClient {
     const updated = this.unwrap(result);
     if (updated) {
       this.lastPart = updated;
+      if (Object.prototype.hasOwnProperty.call(updates, "text")) {
+        this.lastContextText = updates.text ?? null;
+      }
+      if (updates.ignored) {
+        this.lastContextText = null;
+      }
       return true;
     }
     return false;
@@ -148,6 +168,7 @@ export class OpenCodeClient {
 
   private async ignorePreviousPart(): Promise<boolean> {
     if (!this.lastPart) {
+      this.lastContextText = null;
       return false;
     }
 
@@ -157,6 +178,7 @@ export class OpenCodeClient {
     }
 
     this.lastPart = null;
+    this.lastContextText = null;
     return true;
   }
 
@@ -170,6 +192,7 @@ export class OpenCodeClient {
           "x-opencode-directory": this.projectDirectory,
         },
         body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
 
       if (!response.ok) {

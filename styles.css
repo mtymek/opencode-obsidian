@@ -10,9 +10,10 @@
 
 /* Header */
 .opencode-header {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
+  gap: 4px 12px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--background-modifier-border);
   background-color: var(--background-secondary);
@@ -29,6 +30,15 @@
 .opencode-header-title svg {
   width: 16px;
   height: 16px;
+}
+
+.opencode-header-subtitle {
+  grid-column: 1 / 2;
+  font-size: 0.85em;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .opencode-header-actions {

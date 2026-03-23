@@ -27,6 +27,9 @@ export class ContextManager {
 
   private contextEventRefs: EventRef[] = [];
   private contextRefreshTimer: number | null = null;
+  private refreshInFlight = false;
+  private pendingLeaf: WorkspaceLeaf | null = null;
+  private lastContextKey: string | null = null;
 
   constructor(deps: ContextManagerDeps) {
     this.app = deps.app;
@@ -40,7 +43,16 @@ export class ContextManager {
   }
 
   updateSettings(settings: OpenCodeSettings): void {
+    const injectWorkspaceContextChanged =
+      this.settings.injectWorkspaceContext !== settings.injectWorkspaceContext;
+
     this.settings = settings;
+
+    if (injectWorkspaceContextChanged && !settings.injectWorkspaceContext) {
+      this.lastContextKey = null;
+      this.client.resetTracking();
+    }
+
     this.updateListeners();
   }
 
@@ -104,6 +116,8 @@ export class ContextManager {
       this.app.workspace.offref(ref);
     }
     this.contextEventRefs = [];
+    this.pendingLeaf = null;
+    this.refreshInFlight = false;
     if (this.contextRefreshTimer !== null) {
       window.clearTimeout(this.contextRefreshTimer);
       this.contextRefreshTimer = null;
@@ -132,13 +146,20 @@ export class ContextManager {
       return activeLeaf;
     }
 
-    return this.getVisibleSidebarLeaf();
+    return this.getVisibleLeaf();
   }
 
-  private getVisibleSidebarLeaf(): WorkspaceLeaf | null {
+  private getVisibleLeaf(): WorkspaceLeaf | null {
     const leaves = this.app.workspace.getLeavesOfType(OPENCODE_VIEW_TYPE);
     if (leaves.length === 0) {
       return null;
+    }
+
+    for (const leaf of leaves) {
+      const root = leaf.getRoot();
+      if (root !== this.app.workspace.rightSplit) {
+        return leaf;
+      }
     }
 
     const rightSplit = this.app.workspace.rightSplit;
@@ -146,18 +167,23 @@ export class ContextManager {
       return null;
     }
 
-    const leaf = leaves[0];
-    return leaf.getRoot() === rightSplit ? leaf : null;
+    return leaves.find((leaf) => leaf.getRoot() === rightSplit) ?? null;
   }
 
   async handleServerRunning(): Promise<void> {
     const activeLeaf = this.app.workspace.activeLeaf;
     if (activeLeaf?.view.getViewType() === OPENCODE_VIEW_TYPE) {
       await this.refreshContext(activeLeaf);
+      return;
+    }
+
+    const visibleLeaf = this.getVisibleLeaf();
+    if (visibleLeaf) {
+      await this.refreshContext(visibleLeaf);
     }
   }
 
-  async refreshContextForView(view: OpenCodeView): Promise<void> {
+  async refreshContextForView(_view: OpenCodeView): Promise<void> {
     if (!this.settings.injectWorkspaceContext) {
       return;
     }
@@ -179,28 +205,51 @@ export class ContextManager {
       return;
     }
 
-    const view = leaf.view instanceof OpenCodeView ? leaf.view : null;
-    const iframeUrl = this.getCachedIframeUrl() ?? view?.getIframeUrl();
-    if (!iframeUrl) {
+    if (this.refreshInFlight) {
+      this.pendingLeaf = leaf;
       return;
     }
 
-    const sessionId = this.client.resolveSessionId(iframeUrl);
-    if (!sessionId) {
-      return;
+    this.refreshInFlight = true;
+
+    try {
+      const view = leaf.view instanceof OpenCodeView ? leaf.view : null;
+      const iframeUrl = this.getCachedIframeUrl() ?? view?.getIframeUrl();
+      if (!iframeUrl) {
+        return;
+      }
+
+      const sessionId = this.client.resolveSessionId(iframeUrl);
+      if (!sessionId) {
+        return;
+      }
+
+      this.setCachedIframeUrl(iframeUrl);
+
+      const { contextText } = this.workspaceContext.gatherContext(
+        this.settings.maxNotesInContext,
+        this.settings.maxSelectionLength
+      );
+
+      const nextContextKey = `${sessionId}::${contextText ?? ""}`;
+      if (nextContextKey === this.lastContextKey) {
+        return;
+      }
+
+      await this.client.updateContext({
+        sessionId,
+        contextText,
+      });
+
+      this.lastContextKey = nextContextKey;
+    } finally {
+      this.refreshInFlight = false;
+      const pendingLeaf = this.pendingLeaf;
+      this.pendingLeaf = null;
+      if (pendingLeaf) {
+        void this.refreshContext(pendingLeaf);
+      }
     }
-
-    this.setCachedIframeUrl(iframeUrl);
-
-    const { contextText } = this.workspaceContext.gatherContext(
-      this.settings.maxNotesInContext,
-      this.settings.maxSelectionLength
-    );
-
-    await this.client.updateContext({
-      sessionId,
-      contextText,
-    });
   }
 
   destroy(): void {

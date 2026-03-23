@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterEach } from "bun:test";
+import { describe, test, expect, afterEach } from "bun:test";
 import { ServerManager, ServerState } from "../src/server/ServerManager";
 import { OpenCodeSettings } from "../src/types";
 
@@ -32,22 +32,8 @@ function createTestSettings(port: number): OpenCodeSettings {
 
 // Track current manager for cleanup
 let currentManager: ServerManager | null = null;
-
-// Verify opencode binary is available before running tests
-beforeAll(async () => {
-  const proc = Bun.spawn(["opencode", "--version"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const exitCode = await proc.exited;
-
-  if (exitCode !== 0) {
-    throw new Error(
-      "opencode binary not found or not executable. " +
-        "Please ensure 'opencode' is installed and available in PATH."
-    );
-  }
-});
+const HAS_OPENCODE_BINARY = Boolean(Bun.which("opencode"));
+const describeIfOpenCode = HAS_OPENCODE_BINARY ? describe : describe.skip;
 
 // Cleanup after each test
 afterEach(async () => {
@@ -59,7 +45,7 @@ afterEach(async () => {
   }
 });
 
-describe("ServerManager", () => {
+describeIfOpenCode("ServerManager", () => {
   describe("happy path", () => {
      test("starts server and transitions to running state", async () => {
        const port = getNextPort();
