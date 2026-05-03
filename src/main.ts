@@ -195,6 +195,10 @@ export default class OpenCodePlugin extends Plugin {
     const success = await this.processManager.start();
     if (success) {
       new Notice("OpenCode server started");
+      const initialized = await this.openCodeClient.initializeProject();
+      if (!initialized) {
+        console.warn("[OpenCode] Failed to initialize project on server");
+      }
     } else {
       const error = this.processManager.getLastError();
       if (error) {
