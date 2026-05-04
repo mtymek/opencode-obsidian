@@ -47,8 +47,25 @@ export class ViewManager {
     const existingLeaf = this.getExistingLeaf();
 
     if (existingLeaf) {
-      this.app.workspace.revealLeaf(existingLeaf);
-      return;
+      // PROBLEM: User clicks icon, but if Obsidian previously saved the view
+      // in workspace.json (e.g., sidebar), it finds that leaf and reveals it
+      // in the WRONG location, ignoring the user's "Default view location" setting.
+      //
+      // SOLUTION: Check if the existing leaf is in the correct location
+      // before just revealing it. If wrong, detach and let the code below
+      // create a new leaf in the correct location.
+      const isInSidebar = existingLeaf.getRoot() === this.app.workspace.rightSplit;
+      const shouldBeInSidebar = this.settings.defaultViewLocation !== "main";
+
+      if (isInSidebar === shouldBeInSidebar) {
+        // Location matches user's setting, just reveal it
+        this.app.workspace.revealLeaf(existingLeaf);
+        return;
+      }
+
+      // Location doesn't match user's setting (e.g., sidebar when "main" is set)
+      // Detach the old leaf so we can create a new one in the correct location
+      existingLeaf.detach();
     }
 
     // Create new leaf based on defaultViewLocation setting

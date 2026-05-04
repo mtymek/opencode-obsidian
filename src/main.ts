@@ -129,11 +129,20 @@ export default class OpenCodePlugin extends Plugin {
       },
     });
 
-    if (this.settings.autoStart) {
-      this.app.workspace.onLayoutReady(async () => {
-        await this.startServer();
-      });
-    }
+    // Fix view location after layout is restored
+    // WHY: Obsidian restores workspace from workspace.json AFTER onLayoutReady fires
+    // but the restoration might still be in progress. The 100ms delay ensures
+    // the workspace is fully restored before we check/correct the view location.
+    this.app.workspace.onLayoutReady(() => {
+      // Small delay to ensure workspace is fully restored
+      setTimeout(() => {
+        this.fixViewLocation();
+      }, 100);
+      
+      if (this.settings.autoStart) {
+        void this.startServer();
+      }
+    });
 
     this.contextManager.updateSettings(this.settings);
     this.processManager.on("stateChange", (state: ServerState) => {
@@ -151,6 +160,57 @@ export default class OpenCodePlugin extends Plugin {
     this.contextManager.destroy();
     await this.stopServer();
     this.app.workspace.detachLeavesOfType(OPENCODE_VIEW_TYPE);
+  }
+
+  /**
+   * PROBLEM: Obsidian saves view locations in workspace.json when you close the vault.
+   * When reopening, it restores the OpenCode view to its saved location (usually sidebar),
+   * COMPLETELY IGNORING the user's "Default view location" setting.
+   * 
+   * WHY THIS FIX IS NEEDED:
+   * - User sets "Main window" in settings, but view keeps opening in sidebar
+   * - Obsidian's workspace restoration happens BEFORE our plugin settings are fully loaded
+   * - The plugin needs to detect and correct the mismatch AFTER workspace is restored
+   * 
+   * HOW THIS HELPS:
+   * - Checks if restored view matches user's location preference
+   * - If mismatch detected, detaches the incorrectly-placed view
+   * - Recreates view in correct location (sidebar vs main tab)
+   * - Ensures user's setting is actually respected
+   */
+  private fixViewLocation(): void {
+    const leaves = this.app.workspace.getLeavesOfType(OPENCODE_VIEW_TYPE);
+    if (leaves.length === 0) {
+      return; // No view to fix
+    }
+
+    const leaf = leaves[0];
+    const isInSidebar = leaf.getRoot() === this.app.workspace.rightSplit;
+    const shouldBeInSidebar = this.settings.defaultViewLocation !== "main";
+
+    if (isInSidebar === shouldBeInSidebar) {
+      return; // Already in correct location
+    }
+
+    console.log("[OpenCode] Fixing view location...");
+    
+    // Get the current view state
+    const state = leaf.getViewState();
+    
+    // Detach the old leaf
+    leaf.detach();
+    
+    // Create new leaf in correct location
+    let newLeaf: WorkspaceLeaf | null = null;
+    if (this.settings.defaultViewLocation === "main") {
+      newLeaf = this.app.workspace.getLeaf("tab");
+    } else {
+      newLeaf = this.app.workspace.getRightLeaf(false);
+    }
+    
+    if (newLeaf) {
+      void newLeaf.setViewState(state);
+    }
   }
 
   async loadSettings(): Promise<void> {
