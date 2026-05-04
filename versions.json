@@ -1,0 +1,20 @@
+{
+  // WHY THIS FILE IS NEEDED:
+  // Obsidian Community Plugins require versions.json to map plugin versions
+  // to minimum Obsidian versions. When a user with an older Obsidian app
+  // tries to install/update the plugin, Obsidian checks this file to find
+  // the latest compatible plugin version for their app version.
+  //
+  // HOW THIS HELPS:
+  // - Enables plugin submission to obsidianmd/obsidian-releases
+  // - Allows users with older Obsidian versions to get compatible plugin versions
+  // - Required for the plugin to appear in Community Plugins browser
+  //
+  // FORMAT: "plugin_version": "min_obsidian_version"
+  // Example: "0.2.1" plugin requires at least Obsidian 1.4.0
+  
+  "0.2.1": "1.4.0",
+  "0.2.0": "1.4.0",
+  "0.1.0": "1.4.0",
+  "0.0.1": "1.4.0"
+}
