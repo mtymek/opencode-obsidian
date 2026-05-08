@@ -13,6 +13,8 @@ export interface OpenCodeSettings {
   maxSelectionLength: number;
   customCommand: string;
   useCustomCommand: boolean;
+  maxSessions: number;
+  language: "en" | "zh";
 }
 
 export const DEFAULT_SETTINGS: OpenCodeSettings = {
@@ -28,6 +30,8 @@ export const DEFAULT_SETTINGS: OpenCodeSettings = {
   maxSelectionLength: 2000,
   customCommand: "",
   useCustomCommand: false,
+  maxSessions: 5,
+  language: "en",
 };
 
-export const OPENCODE_VIEW_TYPE = "opencode-view";
+export const OPENCODE_VIEW_TYPE = "opencodian-view";
