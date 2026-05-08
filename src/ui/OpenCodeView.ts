@@ -88,6 +88,7 @@ export class OpenCodeView extends ItemView {
     this.activeIndex = index;
     this.buildTabBar();
     this.switchIframe();
+    this.persistTabs();
   }
 
   async addSession(): Promise<void> {
@@ -112,6 +113,7 @@ export class OpenCodeView extends ItemView {
       this.iframePool.set(tab.id, iframe);
       this.iframeContainerEl?.appendChild(iframe);
       this.switchIframe();
+      this.persistTabs();
     }
   }
 
@@ -126,6 +128,7 @@ export class OpenCodeView extends ItemView {
     if (index <= this.activeIndex) this.activeIndex = Math.max(0, this.activeIndex - 1);
     this.buildTabBar();
     this.switchIframe();
+    this.persistTabs();
   }
 
   private switchIframe(): void {
@@ -174,7 +177,8 @@ export class OpenCodeView extends ItemView {
     // Create iframe container
     this.iframeContainerEl = this.contentEl.createDiv({ cls: "opencode-iframe-container" });
 
-    this.ensureTab();
+    // Try to restore previously saved tabs, otherwise create a new one
+    this.restoreTabs();
   }
 
   private async ensureTab(): Promise<void> {
@@ -200,7 +204,42 @@ export class OpenCodeView extends ItemView {
       this.iframePool.set(tab.id, iframe);
       this.iframeContainerEl?.appendChild(iframe);
       this.switchIframe();
+      this.persistTabs();
     }
+  }
+
+  // ── Persistence ──
+
+  private persistTabs(): void {
+    void this.plugin.saveSessionTabs(this.sessions, this.activeIndex);
+  }
+
+  private async restoreTabs(): Promise<void> {
+    const saved = await this.plugin.loadSessionTabs();
+    if (!saved || saved.tabs.length === 0) {
+      this.ensureTab();
+      return;
+    }
+
+    // Restore tabs from saved session IDs
+    for (const savedTab of saved.tabs) {
+      const tab: SessionTab = {
+        id: String(this.nextId++),
+        sessionId: savedTab.sessionId,
+        iframeUrl: savedTab.iframeUrl,
+        isBusy: false,
+      };
+      this.sessions.push(tab);
+      if (tab.iframeUrl) {
+        const iframe = this.createIframe(tab.iframeUrl);
+        this.iframePool.set(tab.id, iframe);
+        this.iframeContainerEl?.appendChild(iframe);
+      }
+    }
+
+    this.activeIndex = saved.activeIndex;
+    this.buildTabBar();
+    this.switchIframe();
   }
 
   private renderError(): void {
