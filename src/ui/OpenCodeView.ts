@@ -25,6 +25,7 @@ export class OpenCodeView extends ItemView {
   private activeIndex = 0;
   private nextId = 1;
   private tabBarEl: HTMLElement | null = null;
+  private sessionStatuses: Record<string, { type: string }> = {};
 
   constructor(leaf: WorkspaceLeaf, plugin: OpenCodePlugin) {
     super(leaf);
@@ -45,6 +46,12 @@ export class OpenCodeView extends ItemView {
   }
   getAllSessionTabs(): SessionTab[] { return this.sessions; }
   getActiveSessionIndex(): number { return this.activeIndex; }
+
+  /** Called by main.ts to push real-time session status updates. */
+  updateSessionStatuses(statuses: Record<string, { type: string }>): void {
+    this.sessionStatuses = statuses;
+    this.buildTabBar();
+  }
 
   // ── Lifecycle ──
 
@@ -279,7 +286,13 @@ export class OpenCodeView extends ItemView {
         const el = document.createElement("button");
         el.className = "opencode-tab";
         if (idx === this.activeIndex) el.classList.add("opencode-tab-active");
-        if (tab.isBusy) el.classList.add("opencode-tab-busy");
+        if (tab.isBusy) {
+          el.classList.add("opencode-tab-busy");
+        } else if (tab.sessionId && this.sessionStatuses[tab.sessionId]?.type === "busy") {
+          el.classList.add("opencode-tab-busy");
+        } else if (tab.sessionId && this.sessionStatuses[tab.sessionId]?.type === "retry") {
+          el.classList.add("opencode-tab-attention");
+        }
         el.setAttribute("aria-label", `Session ${idx + 1}`);
 
         const label = document.createElement("span");

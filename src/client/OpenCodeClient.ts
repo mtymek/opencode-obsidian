@@ -7,10 +7,7 @@ type OpenCodePart = {
   ignored?: boolean;
   synthetic?: boolean;
   metadata?: Record<string, unknown>;
-  time?: {
-    start: number;
-    end?: number;
-  };
+  time?: { start: number; end?: number };
 };
 
 type OpenCodeMessageInfo = {
@@ -28,6 +25,33 @@ type OpenCodeSession = {
 };
 
 type OpenCodeResponse<T> = T | { data?: T } | { message?: T } | null;
+
+/** Full assistant response returned by the server after sending a message. */
+export interface AssistantResponse {
+  info: {
+    id: string;
+    sessionID: string;
+    role: string;
+    mode?: string;
+    agent?: string;
+    modelID?: string;
+    providerID?: string;
+    cost?: number;
+    tokens?: Record<string, unknown>;
+    finish?: string;
+    time: { created: number; completed?: number };
+  };
+  parts: OpenCodePart[];
+}
+
+/** Parsed chat message used by the native UI. */
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  reasoning?: string;
+  timestamp: number;
+}
 
 export class OpenCodeClient {
   private apiBaseUrl: string;
@@ -67,18 +91,14 @@ export class OpenCodeClient {
       const url = `${this.apiBaseUrl}/session?directory=${encodeURIComponent(this.projectDirectory)}`;
       const response = await fetch(url, {
         method: "GET",
-        headers: {
-          "x-opencode-directory": this.projectDirectory,
-        },
+        headers: { "x-opencode-directory": this.projectDirectory },
       });
-
       if (response.ok) {
         console.log("[OpenCode] Project initialized:", this.projectDirectory);
         return true;
-      } else {
-        console.warn("[OpenCode] Project initialization failed:", response.status);
-        return false;
       }
+      console.warn("[OpenCode] Project initialization failed:", response.status);
+      return false;
     } catch (error) {
       console.error("[OpenCode] Project initialization error:", error);
       return false;
@@ -95,13 +115,26 @@ export class OpenCodeClient {
   }
 
   async createSession(): Promise<string | null> {
-    const result = await this.request<OpenCodeSession>("POST", "/session", {
-      title: "Obsidian",
-    });
+    const result = await this.request<OpenCodeSession>("POST", "/session", { title: "Obsidian" });
     const session = this.unwrap(result);
     return session?.id ?? null;
   }
 
+  /** Get the status (idle/busy/retry) of all sessions. */
+  async getSessionStatus(): Promise<Record<string, { type: string }> | null> {
+    const result = await this.request<Record<string, { type: string }>>("GET", "/session/status");
+    return this.unwrap(result);
+  }
+
+  /** Send a user message and return the full assistant response. */
+  async sendMessage(sessionId: string, text: string): Promise<AssistantResponse | null> {
+    const result = await this.request<AssistantResponse>('POST', `/session/${sessionId}/message`, {
+      parts: [{ type: 'text', text }],
+    });
+    return this.unwrap(result);
+  }
+
+  /** Inject context into a session (no AI reply). */
   async updateContext(params: {
     sessionId: string;
     contextText: string | null;
@@ -120,9 +153,7 @@ export class OpenCodeClient {
 
     if (this.lastPart) {
       const updated = await this.updatePart(this.lastPart, { text: contextText });
-      if (updated) {
-        return;
-      }
+      if (updated) return;
       await this.ignorePreviousPart();
     }
 
@@ -136,19 +167,10 @@ export class OpenCodeClient {
     const result = await this.request<OpenCodeMessageWithParts>(
       "POST",
       `/session/${sessionId}/message`,
-      {
-        noReply: true,
-        parts: [{ type: "text", text: contextText }],
-      }
+      { noReply: true, parts: [{ type: "text", text: contextText }] }
     );
-
-    console.log("[OpenCode] Injected context message");
-    console.log(contextText)
-
     const message = this.unwrap(result);
-    if (!message) {
-      console.error("[OpenCode] Failed to inject context message");
-    }
+    if (!message) console.error("[OpenCode] Failed to inject context message");
     return message;
   }
 
@@ -156,29 +178,17 @@ export class OpenCodeClient {
     const result = await this.request<OpenCodePart>(
       "PATCH",
       `/session/${part.sessionID}/message/${part.messageID}/part/${part.id}`,
-      {
-        ...part,
-        ...updates,
-      }
+      { ...part, ...updates }
     );
     const updated = this.unwrap(result);
-    if (updated) {
-      this.lastPart = updated;
-      return true;
-    }
+    if (updated) { this.lastPart = updated; return true; }
     return false;
   }
 
   private async ignorePreviousPart(): Promise<boolean> {
-    if (!this.lastPart) {
-      return false;
-    }
-
+    if (!this.lastPart) return false;
     const ignored = await this.updatePart(this.lastPart, { ignored: true });
-    if (!ignored) {
-      return false;
-    }
-
+    if (!ignored) return false;
     this.lastPart = null;
     return true;
   }
@@ -194,18 +204,11 @@ export class OpenCodeClient {
         },
         body: body ? JSON.stringify(body) : undefined,
       });
-
       if (!response.ok) {
-        console.error("[OpenCode] API request failed", {
-          path,
-          status: response.status,
-        });
+        console.error("[OpenCode] API request failed", { path, status: response.status });
         return null;
       }
-
-      const json = await response
-        .json()
-        .catch(() => null);
+      const json = await response.json().catch(() => null);
       return json as OpenCodeResponse<T>;
     } catch (error) {
       console.error("[OpenCode] API request error", error);
@@ -214,17 +217,11 @@ export class OpenCodeClient {
   }
 
   private unwrap<T>(result: OpenCodeResponse<T>): T | null {
-    if (!result) {
-      return null;
-    }
+    if (!result) return null;
     if (typeof result === "object") {
       const payload = result as { data?: T; message?: T };
-      if (payload.data) {
-        return payload.data;
-      }
-      if (payload.message) {
-        return payload.message;
-      }
+      if (payload.data) return payload.data;
+      if (payload.message) return payload.message;
     }
     return result as T;
   }

@@ -14,6 +14,8 @@ export default class OpenCodePlugin extends Plugin {
   private stateChangeCallbacks: Array<(state: ServerState) => void> = [];
   private contextManager: ContextManager;
   private viewManager: ViewManager;
+  private ribbonIconEl: HTMLElement | null = null;
+  private statusPollTimer: ReturnType<typeof setInterval> | null = null;
 
   async onload(): Promise<void> {
     console.log("Loading OpenCode plugin");
@@ -69,7 +71,7 @@ export default class OpenCodePlugin extends Plugin {
       () => this.saveSettings()
     ));
 
-    this.addRibbonIcon(OPENCODE_ICON_NAME, "OpenCode", () => {
+    this.ribbonIconEl = this.addRibbonIcon(OPENCODE_ICON_NAME, "OpenCode", () => {
       void this.viewManager.activateView();
     });
 
@@ -108,6 +110,10 @@ export default class OpenCodePlugin extends Plugin {
     this.processManager.on("stateChange", (state: ServerState) => {
       if (state === "running") {
         void this.contextManager.handleServerRunning();
+        this.startStatusPolling();
+      } else if (state === "stopped" || state === "error") {
+        this.stopStatusPolling();
+        this.updateRibbonBusyState(false);
       }
     });
 
@@ -116,6 +122,7 @@ export default class OpenCodePlugin extends Plugin {
   }
 
   async onunload(): Promise<void> {
+    this.stopStatusPolling();
     this.contextManager.destroy();
     await this.stopServer();
     this.app.workspace.detachLeavesOfType(OPENCODE_VIEW_TYPE);
@@ -262,6 +269,50 @@ export default class OpenCodePlugin extends Plugin {
     }
     const adapter = this.app.vault.adapter as any;
     return adapter.basePath || "";
+  }
+
+  // ── Session status polling ──
+
+  private startStatusPolling(): void {
+    this.stopStatusPolling();
+    this.statusPollTimer = setInterval(() => void this.pollSessionStatus(), 5000);
+    void this.pollSessionStatus();
+  }
+
+  private stopStatusPolling(): void {
+    if (this.statusPollTimer) {
+      clearInterval(this.statusPollTimer);
+      this.statusPollTimer = null;
+    }
+  }
+
+  private async pollSessionStatus(): Promise<void> {
+    if (this.getServerState() !== "running") return;
+    try {
+      const view = this.viewManager.getView();
+      if (!view) return;
+      const statuses = await view.client.getSessionStatus();
+      if (!statuses) return;
+
+      const isBusy = Object.values(statuses).some(
+        (s) => s.type === "busy" || s.type === "retry"
+      );
+      this.updateRibbonBusyState(isBusy);
+
+      // Push status to view for tab bar updates
+      view.updateSessionStatuses(statuses);
+    } catch {
+      // Silently ignore polling errors
+    }
+  }
+
+  private updateRibbonBusyState(isBusy: boolean): void {
+    if (!this.ribbonIconEl) return;
+    if (isBusy) {
+      this.ribbonIconEl.classList.add("opencode-ribbon-busy");
+    } else {
+      this.ribbonIconEl.classList.remove("opencode-ribbon-busy");
+    }
   }
 
   private registerCleanupHandlers(): void {
