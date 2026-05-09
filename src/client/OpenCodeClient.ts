@@ -26,6 +26,24 @@ type OpenCodeSession = {
 
 type OpenCodeResponse<T> = T | { data?: T } | { message?: T } | null;
 
+/** Session metadata returned by the session list API. */
+export interface SessionInfo {
+  id: string;
+  slug?: string;
+  title?: string;
+  parentID?: string;
+  time?: {
+    created: number;
+    updated: number;
+    archived?: number;
+  };
+  summary?: {
+    additions: number;
+    deletions: number;
+    files: number;
+  };
+}
+
 /** Full assistant response returned by the server after sending a message. */
 export interface AssistantResponse {
   info: {
@@ -124,6 +142,29 @@ export class OpenCodeClient {
   async getSessionStatus(): Promise<Record<string, { type: string }> | null> {
     const result = await this.request<Record<string, { type: string }>>("GET", "/session/status");
     return this.unwrap(result);
+  }
+
+  /** List all sessions for the current project (excludes sub-agent sessions). */
+  async listSessions(): Promise<SessionInfo[] | null> {
+    const result = await this.request<SessionInfo[]>("GET", "/session?scope=project");
+    const sessions = this.unwrap(result);
+    if (!Array.isArray(sessions)) return null;
+    // Filter out sub-agent sessions (they have parentID)
+    return sessions.filter((s) => !s.parentID);
+  }
+
+  /** Delete a session by ID. */
+  async deleteSession(sessionId: string): Promise<boolean> {
+    try {
+      const url = `${this.apiBaseUrl}/session/${sessionId}`;
+      const response = await fetch(url, {
+        method: "DELETE",
+        headers: { "x-opencode-directory": this.projectDirectory },
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
   }
 
   /** Send a user message and return the full assistant response. */

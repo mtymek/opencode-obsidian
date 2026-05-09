@@ -1,7 +1,7 @@
 import { ItemView, WorkspaceLeaf, setIcon } from "obsidian";
 import { OPENCODE_VIEW_TYPE } from "../types";
 import { OPENCODE_ICON_NAME } from "../icons";
-import { OpenCodeClient } from "../client/OpenCodeClient";
+import { OpenCodeClient, SessionInfo } from "../client/OpenCodeClient";
 import type OpenCodePlugin from "../main";
 import type { ServerState } from "../server/types";
 
@@ -25,6 +25,7 @@ export class OpenCodeView extends ItemView {
   private activeIndex = 0;
   private nextId = 1;
   private tabBarEl: HTMLElement | null = null;
+  private historyPanelEl: HTMLElement | null = null;
   private sessionStatuses: Record<string, { type: string }> = {};
 
   constructor(leaf: WorkspaceLeaf, plugin: OpenCodePlugin) {
@@ -308,5 +309,174 @@ export class OpenCodeView extends ItemView {
         bar.appendChild(el);
       });
     }
+
+    // History button (always visible when server is running)
+    const historyBtn = document.createElement("button");
+    historyBtn.className = "opencode-history-btn";
+    historyBtn.setAttribute("aria-label", "Session history");
+    setIcon(historyBtn, "clock");
+    historyBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.toggleHistoryPanel();
+    });
+    bar.appendChild(historyBtn);
+  }
+
+  // ── History panel ──
+
+  private toggleHistoryPanel(): void {
+    if (this.historyPanelEl) {
+      this.hideHistoryPanel();
+    } else {
+      void this.showHistoryPanel();
+    }
+  }
+
+  private hideHistoryPanel(): void {
+    this.historyPanelEl?.remove();
+    this.historyPanelEl = null;
+  }
+
+  private async showHistoryPanel(): Promise<void> {
+    this.hideHistoryPanel();
+
+    if (!this.tabBarEl) return;
+
+    // Create panel container
+    const panel = document.createElement("div");
+    panel.className = "opencode-history-panel";
+
+    // Header
+    const header = panel.createDiv({ cls: "opencode-history-header" });
+    header.createEl("span", { text: "历史会话" });
+    const closeBtn = header.createEl("button", { cls: "opencode-history-close" });
+    setIcon(closeBtn, "x");
+    closeBtn.addEventListener("click", () => this.hideHistoryPanel());
+
+    // Loading state
+    const listEl = panel.createDiv({ cls: "opencode-history-list" });
+    listEl.createDiv({ cls: "opencode-history-loading", text: "加载中..." });
+
+    // Footer placeholder
+    const footer = panel.createDiv({ cls: "opencode-history-footer" });
+
+    // Append to tab bar (positioned relative)
+    this.tabBarEl.style.position = "relative";
+    this.tabBarEl.appendChild(panel);
+    this.historyPanelEl = panel;
+
+    // Close on outside click
+    const onOutsideClick = (e: MouseEvent) => {
+      if (!panel.contains(e.target as Node)) {
+        this.hideHistoryPanel();
+        document.removeEventListener("click", onOutsideClick);
+      }
+    };
+    setTimeout(() => document.addEventListener("click", onOutsideClick), 0);
+
+    // Fetch sessions
+    const sessions = await this.client.listSessions();
+    if (!this.historyPanelEl) return; // Panel was closed during fetch
+
+    listEl.empty();
+
+    if (!sessions || sessions.length === 0) {
+      listEl.createDiv({ cls: "opencode-history-empty", text: "暂无历史会话" });
+      footer.createDiv({ cls: "opencode-history-count" });
+      return;
+    }
+
+    // Sort by updated time (most recent first)
+    sessions.sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
+
+    // Get currently open session IDs
+    const openIds = new Set(this.sessions.map((t) => t.sessionId).filter(Boolean));
+
+    // Render items
+    for (const session of sessions) {
+      const item = listEl.createDiv({ cls: "opencode-history-item" });
+      if (openIds.has(session.id)) {
+        item.classList.add("opencode-history-item-active");
+      }
+
+      const title = item.createDiv({ cls: "opencode-history-item-title" });
+      title.textContent = session.title || session.slug || "Untitled";
+
+      const time = item.createDiv({ cls: "opencode-history-item-time" });
+      time.textContent = this.formatRelativeTime(session.time?.updated ?? session.time?.created ?? 0);
+
+      item.addEventListener("click", () => {
+        this.hideHistoryPanel();
+        void this.loadSession(session.id);
+      });
+    }
+
+    // Footer: count + clean button
+    const activeCount = sessions.filter((s) => openIds.has(s.id)).length;
+    footer.createDiv({ cls: "opencode-history-count", text: `${sessions.length} 个会话` });
+
+    const cleanableCount = sessions.filter((s) => !openIds.has(s.id)).length;
+    if (cleanableCount > 0) {
+      const cleanBtn = footer.createEl("button", { text: `清理 ${cleanableCount} 个旧会话` });
+      cleanBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        void this.cleanOldSessions(sessions, openIds);
+      });
+    }
+  }
+
+  /** Load an existing session into a new tab. */
+  private async loadSession(sessionId: string): Promise<void> {
+    if (this.sessions.length >= this.plugin.settings.maxSessions) {
+      // Replace current tab instead
+      this.closeTab(this.activeIndex);
+    }
+
+    const iframeUrl = this.client.getSessionUrl(sessionId);
+    const tab: SessionTab = {
+      id: String(this.nextId++),
+      sessionId,
+      iframeUrl,
+      isBusy: false,
+    };
+    this.sessions.push(tab);
+    this.activeIndex = this.sessions.length - 1;
+
+    const iframe = this.createIframe(iframeUrl);
+    this.iframePool.set(tab.id, iframe);
+    this.iframeContainerEl?.appendChild(iframe);
+
+    this.buildTabBar();
+    this.switchIframe();
+    this.persistTabs();
+  }
+
+  /** Delete old sessions that are not currently open. */
+  private async cleanOldSessions(sessions: SessionInfo[], openIds: Set<string | null>): Promise<void> {
+    const toDelete = sessions.filter((s) => !openIds.has(s.id));
+    let deleted = 0;
+    for (const session of toDelete) {
+      const ok = await this.client.deleteSession(session.id);
+      if (ok) deleted++;
+    }
+    console.log(`[OpenCode] Cleaned ${deleted}/${toDelete.length} old sessions`);
+    this.hideHistoryPanel();
+    // Re-open to show updated list
+    void this.showHistoryPanel();
+  }
+
+  private formatRelativeTime(ts: number): string {
+    if (!ts) return "";
+    const now = Date.now();
+    const diff = now - ts;
+    const minutes = Math.floor(diff / 60000);
+    if (minutes < 1) return "刚刚";
+    if (minutes < 60) return `${minutes}分钟前`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}小时前`;
+    const days = Math.floor(hours / 24);
+    if (days < 30) return `${days}天前`;
+    const date = new Date(ts);
+    return `${date.getMonth() + 1}/${date.getDate()}`;
   }
 }
