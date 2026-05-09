@@ -48,6 +48,20 @@ _注意：插件作者与 OpenCode 或 Obsidian 无隶属关系，这是第三�
 - 标签栏实时显示每个会话的状态：空闲 / 处理中（脉冲动画）/ 重试中（红色警告）
 - 每 5 秒轮询 OpenCode API 获取最新状态
 
+### 🕐 历史会话浏览器
+
+- 点击标签栏右侧时钟图标，弹出历史会话面板
+- 按时间倒序列出所有历史会话，显示标题和相对时间
+- 点击任一历史会话即可在新标签页中加载
+- 底部「清理旧会话」按钮可一键批量删除非活跃的历史会话
+- 当前已打开的会话会标记「活跃」状态，不会被误删
+
+### 🛡️ 启动故障自愈
+
+- 重启 Obsidian 时自动检测是否有残留的 opencode 进程占用端口
+- 自动清理僵尸进程和孤儿 TCP 连接，避免服务启动失败
+- 无需手动 taskkill，开箱即用
+
 ---
 
 ## 环境要求
@@ -186,6 +200,20 @@ Built on top of the original project with the following additions:
 - Ribbon icon automatically changes color and pulses when AI is processing
 - Tab bar shows per-session status in real time: idle / busy (pulse animation) / retry (red alert)
 - Polls OpenCode API every 5 seconds for latest status
+
+### 🕐 Session History Browser
+
+- Click the clock icon on the right side of the tab bar to open the history panel
+- Lists all past sessions in reverse chronological order with titles and relative timestamps
+- Click any session to load it in a new tab instantly
+- "Clean old sessions" button at the bottom for bulk-deleting inactive sessions
+- Currently open sessions are marked as "Active" and protected from accidental deletion
+
+### 🛡️ Startup Self-Healing
+
+- Automatically detects leftover opencode processes holding the port on Obsidian restart
+- Cleans up zombie processes and orphaned TCP connections to prevent server startup failures
+- No manual taskkill needed — works out of the box
 
 ---
 
