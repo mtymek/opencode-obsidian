@@ -33,36 +33,17 @@ export class WindowsProcess implements OpenCodeProcess {
 
     console.log("[OpenCode] Stopping server process tree, PID:", pid);
 
-    // Method 1: Find and kill child processes (actual node.exe) using PowerShell
-    // This is necessary because shell: true spawns cmd.exe -> node.exe, and
-    // killing cmd.exe leaves node.exe orphaned
+    // Use /T flag to kill the entire process tree (cmd.exe -> node.exe -> opencode.exe)
+    // This is more reliable than manually finding child processes
     try {
-      const { execSync } = require("child_process");
-      const output = execSync(
-        `powershell -Command "Get-CimInstance Win32_Process -Filter \\"ParentProcessId=${pid}\\" | Select-Object ProcessId"`,
-        { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }
-      );
-
-      const lines = output.split("\n").slice(3); // Skip headers
-      for (const line of lines) {
-        const childPid = line.trim();
-        if (childPid && !isNaN(parseInt(childPid))) {
-          try {
-            execSync(`taskkill /F /PID ${childPid}`, { stdio: "ignore" });
-          } catch {
-            // Child may already be gone
-          }
-        }
+      await this.execAsync(`taskkill /F /T /PID ${pid}`);
+    } catch {
+      // Process tree may already be gone; try individual kill as fallback
+      try {
+        await this.execAsync(`taskkill /F /PID ${pid}`);
+      } catch {
+        // Parent may already be gone
       }
-    } catch {
-      // PowerShell lookup failed, continue to other methods
-    }
-
-    // Method 2: Kill the parent process (cmd.exe)
-    try {
-      await this.execAsync(`taskkill /F /PID ${pid}`);
-    } catch {
-      // Parent may already be gone
     }
 
     // Clear stored process
@@ -93,36 +74,45 @@ export class WindowsProcess implements OpenCodeProcess {
     try {
       const { execSync } = require("child_process");
 
-      // Method 1: Kill child processes using PowerShell
+      // Kill entire process tree synchronously (for beforeunload handler)
       try {
-        const output = execSync(
-          `powershell -Command "Get-CimInstance Win32_Process -Filter \\"ParentProcessId=${pid}\\" | Select-Object ProcessId"`,
-          { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }
-        );
-
-        const lines = output.split("\n").slice(3);
-        for (const line of lines) {
-          const childPid = line.trim();
-          if (childPid && !isNaN(parseInt(childPid))) {
-            try {
-              execSync(`taskkill /F /PID ${childPid}`, { stdio: "ignore" });
-            } catch {
-              // Child may already be gone
-            }
-          }
+        execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore" });
+      } catch {
+        // Fallback: kill just the parent
+        try {
+          execSync(`taskkill /F /PID ${pid}`, { stdio: "ignore" });
+        } catch {
+          // Process may already be gone
         }
-      } catch {
-        // PowerShell lookup failed
-      }
-
-      // Method 2: Kill parent process
-      try {
-        execSync(`taskkill /F /PID ${pid}`, { stdio: "ignore" });
-      } catch {
-        // Parent may already be gone
       }
     } catch {
       // Process may already be gone
+    }
+  }
+
+  /** Find the PID of the process listening on a given port. Returns null if not found. */
+  static async findPidOnPort(port: number): Promise<number | null> {
+    try {
+      const { execSync } = require("child_process");
+      const output = execSync(
+        `powershell -Command "(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue).OwningProcess"`,
+        { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }
+      );
+      const pid = parseInt(output.trim(), 10);
+      return isNaN(pid) ? null : pid;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Kill a process by PID (entire process tree). Returns true if killed. */
+  static async killPid(pid: number): Promise<boolean> {
+    try {
+      const { execSync } = require("child_process");
+      execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
     }
   }
 

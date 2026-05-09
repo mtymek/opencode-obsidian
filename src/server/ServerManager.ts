@@ -100,6 +100,10 @@ export class ServerManager extends EventEmitter {
       return true;
     }
 
+    // Port is occupied but server is unresponsive → zombie process
+    // Attempt to kill it before spawning a new one
+    await this.killZombieOnPort();
+
     console.log("[OpenCode] Starting server:", {
       mode: this.settings.useCustomCommand ? "custom" : "path",
       command: executablePath,
@@ -255,5 +259,50 @@ export class ServerManager extends EventEmitter {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Detect and kill a zombie process occupying the configured port.
+   * A zombie is: port is LISTENING but health check fails (server unresponsive).
+   * This prevents "address already in use" errors when restarting the server.
+   */
+  private async killZombieOnPort(): Promise<void> {
+    const findPid = process.platform === "win32"
+      ? (await import("./process/WindowsProcess")).WindowsProcess.findPidOnPort
+      : (await import("./process/PosixProcess")).PosixProcess.findPidOnPort;
+
+    const killPid = process.platform === "win32"
+      ? (await import("./process/WindowsProcess")).WindowsProcess.killPid
+      : (await import("./process/PosixProcess")).PosixProcess.killPid;
+
+    const pid = await findPid(this.settings.port);
+    if (!pid) {
+      console.log("[OpenCode] No process found on port", this.settings.port);
+      return;
+    }
+
+    // Don't kill ourselves
+    if (pid === process.pid) {
+      console.warn("[OpenCode] Port occupied by current process (self), skipping kill");
+      return;
+    }
+
+    console.warn(`[OpenCode] Zombie process detected on port ${this.settings.port} (PID ${pid}), killing...`);
+    const killed = await killPid(pid);
+
+    if (killed) {
+      // Wait for the port to be released (up to 3 seconds)
+      for (let i = 0; i < 6; i++) {
+        await this.sleep(500);
+        const checkPid = await findPid(this.settings.port);
+        if (!checkPid) {
+          console.log("[OpenCode] Port", this.settings.port, "released after zombie cleanup");
+          return;
+        }
+      }
+      console.warn("[OpenCode] Port still occupied after killing zombie, proceeding anyway");
+    } else {
+      console.warn("[OpenCode] Failed to kill zombie process, proceeding anyway");
+    }
   }
 }

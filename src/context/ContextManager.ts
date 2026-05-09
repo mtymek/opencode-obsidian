@@ -1,6 +1,5 @@
 import { App, EventRef, MarkdownView, WorkspaceLeaf } from "obsidian";
 import { OpenCodeSettings, OPENCODE_VIEW_TYPE } from "../types";
-import { OpenCodeClient } from "../client/OpenCodeClient";
 import { WorkspaceContext } from "./WorkspaceContext";
 import { OpenCodeView } from "../ui/OpenCodeView";
 import { ServerState } from "../server/types";
@@ -8,21 +7,15 @@ import { ServerState } from "../server/types";
 type ContextManagerDeps = {
   app: App;
   settings: OpenCodeSettings;
-  client: OpenCodeClient;
   getServerState: () => ServerState;
-  getCachedIframeUrl: () => string | null;
-  setCachedIframeUrl: (url: string | null) => void;
   registerEvent: (ref: EventRef) => void;
 };
 
 export class ContextManager {
   private app: App;
   private settings: OpenCodeSettings;
-  private client: OpenCodeClient;
   private workspaceContext: WorkspaceContext;
   private getServerState: () => ServerState;
-  private getCachedIframeUrl: () => string | null;
-  private setCachedIframeUrl: (url: string | null) => void;
   private registerEvent: (ref: EventRef) => void;
 
   private contextEventRefs: EventRef[] = [];
@@ -31,11 +24,8 @@ export class ContextManager {
   constructor(deps: ContextManagerDeps) {
     this.app = deps.app;
     this.settings = deps.settings;
-    this.client = deps.client;
     this.workspaceContext = new WorkspaceContext(this.app);
     this.getServerState = deps.getServerState;
-    this.getCachedIframeUrl = deps.getCachedIframeUrl;
-    this.setCachedIframeUrl = deps.setCachedIframeUrl;
     this.registerEvent = deps.registerEvent;
   }
 
@@ -110,11 +100,46 @@ export class ContextManager {
     }
   }
 
-  private scheduleRefresh(delayMs: number = 300): void {
-    const leaf = this.getLeafForRefresh();
-    if (!leaf) {
-      return;
+  /** Find the leaf that should receive context injection */
+  private getTargetLeaf(): WorkspaceLeaf | null {
+    const activeLeaf = this.app.workspace.activeLeaf;
+    if (activeLeaf?.view.getViewType() === OPENCODE_VIEW_TYPE) {
+      return activeLeaf;
     }
+
+    // Fallback: find a visible sidebar leaf
+    const leaves = this.app.workspace.getLeavesOfType(OPENCODE_VIEW_TYPE);
+    if (leaves.length === 0) return null;
+
+    const rightSplit = this.app.workspace.rightSplit;
+    if (rightSplit && !rightSplit.collapsed) {
+      const sidebarLeaf = leaves.find(l => l.getRoot() === rightSplit);
+      if (sidebarLeaf) return sidebarLeaf;
+    }
+
+    return leaves[0];
+  }
+
+  /** Inject workspace context into the given view's active session */
+  private async injectContextForView(view: OpenCodeView): Promise<void> {
+    if (!this.settings.injectWorkspaceContext) return;
+    if (this.getServerState() !== "running") return;
+
+    const sessionId = view.getActiveSessionId();
+    if (!sessionId) return;
+
+    const { contextText } = this.workspaceContext.gatherContext(
+      this.settings.maxNotesInContext,
+      this.settings.maxSelectionLength
+    );
+
+    await view.client.updateContext({ sessionId, contextText });
+  }
+
+  private scheduleRefresh(delayMs: number = 300): void {
+    const leaf = this.getTargetLeaf();
+    if (!leaf) return;
+    if (!(leaf.view instanceof OpenCodeView)) return;
 
     if (this.contextRefreshTimer !== null) {
       window.clearTimeout(this.contextRefreshTimer);
@@ -122,85 +147,20 @@ export class ContextManager {
 
     this.contextRefreshTimer = window.setTimeout(() => {
       this.contextRefreshTimer = null;
-      void this.refreshContext(leaf);
+      void this.injectContextForView(leaf.view as OpenCodeView);
     }, delayMs);
-  }
-
-  private getLeafForRefresh(): WorkspaceLeaf | null {
-    const activeLeaf = this.app.workspace.activeLeaf;
-    if (activeLeaf?.view.getViewType() === OPENCODE_VIEW_TYPE) {
-      return activeLeaf;
-    }
-
-    return this.getVisibleSidebarLeaf();
-  }
-
-  private getVisibleSidebarLeaf(): WorkspaceLeaf | null {
-    const leaves = this.app.workspace.getLeavesOfType(OPENCODE_VIEW_TYPE);
-    if (leaves.length === 0) {
-      return null;
-    }
-
-    const rightSplit = this.app.workspace.rightSplit;
-    if (!rightSplit || rightSplit.collapsed) {
-      return null;
-    }
-
-    const leaf = leaves[0];
-    return leaf.getRoot() === rightSplit ? leaf : null;
   }
 
   async handleServerRunning(): Promise<void> {
     const activeLeaf = this.app.workspace.activeLeaf;
-    if (activeLeaf?.view.getViewType() === OPENCODE_VIEW_TYPE) {
-      await this.refreshContext(activeLeaf);
+    if (activeLeaf?.view instanceof OpenCodeView) {
+      await this.injectContextForView(activeLeaf.view);
     }
   }
 
   async refreshContextForView(view: OpenCodeView): Promise<void> {
-    if (!this.settings.injectWorkspaceContext) {
-      return;
-    }
-
-    const leaf = this.getLeafForRefresh();
-    if (!leaf) {
-      return;
-    }
-
-    await this.refreshContext(leaf);
-  }
-
-  private async refreshContext(leaf: WorkspaceLeaf): Promise<void> {
-    if (!this.settings.injectWorkspaceContext) {
-      return;
-    }
-
-    if (this.getServerState() !== "running") {
-      return;
-    }
-
-    const view = leaf.view instanceof OpenCodeView ? leaf.view : null;
-    const iframeUrl = this.getCachedIframeUrl() ?? view?.getIframeUrl();
-    if (!iframeUrl) {
-      return;
-    }
-
-    const sessionId = this.client.resolveSessionId(iframeUrl);
-    if (!sessionId) {
-      return;
-    }
-
-    this.setCachedIframeUrl(iframeUrl);
-
-    const { contextText } = this.workspaceContext.gatherContext(
-      this.settings.maxNotesInContext,
-      this.settings.maxSelectionLength
-    );
-
-    await this.client.updateContext({
-      sessionId,
-      contextText,
-    });
+    if (!this.settings.injectWorkspaceContext) return;
+    await this.injectContextForView(view);
   }
 
   destroy(): void {

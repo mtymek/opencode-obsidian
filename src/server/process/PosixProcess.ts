@@ -44,6 +44,36 @@ export class PosixProcess implements OpenCodeProcess {
     }
   }
 
+  /** Find the PID of the process listening on a given port. Returns null if not found. */
+  static async findPidOnPort(port: number): Promise<number | null> {
+    try {
+      const { execSync } = require("child_process");
+      const output = execSync(`lsof -iTCP:${port} -sTCP:LISTEN -t`, {
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "ignore"],
+      });
+      const pid = parseInt(output.trim().split("\n")[0], 10);
+      return isNaN(pid) ? null : pid;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Kill a process by PID (entire process group). Returns true if killed. */
+  static async killPid(pid: number): Promise<boolean> {
+    try {
+      process.kill(-pid, "SIGKILL");
+      return true;
+    } catch {
+      try {
+        process.kill(pid, "SIGKILL");
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
   async verifyCommand(command: string): Promise<string | null> {
     // Check if command is absolute path - verify it exists and is executable
     if (command.startsWith('/') || command.startsWith('./')) {
