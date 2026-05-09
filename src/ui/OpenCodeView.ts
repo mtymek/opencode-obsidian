@@ -360,9 +360,9 @@ export class OpenCodeView extends ItemView {
     // Footer placeholder
     const footer = panel.createDiv({ cls: "opencode-history-footer" });
 
-    // Append to tab bar (positioned relative)
-    this.tabBarEl.style.position = "relative";
-    this.tabBarEl.appendChild(panel);
+    // Append to contentEl (NOT tabBarEl — overflow-x: auto clips absolute children)
+    // Position relative to the container so the panel sits just below the tab bar
+    this.contentEl.appendChild(panel);
     this.historyPanelEl = panel;
 
     // Close on outside click

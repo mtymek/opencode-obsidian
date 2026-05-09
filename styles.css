@@ -349,8 +349,8 @@
 /* ── History panel (overlay) ── */
 .opencode-history-panel {
   position: absolute;
-  top: 100%;
-  right: 0;
+  top: 36px;            /* Below the tab bar (min-height: 32px + padding) */
+  right: 12px;
   width: 320px;
   max-height: 420px;
   background: var(--background-primary);
