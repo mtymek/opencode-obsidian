@@ -62,6 +62,29 @@ export class OpenCodeClient {
     this.lastPart = null;
   }
 
+  async initializeProject(): Promise<boolean> {
+    try {
+      const url = `${this.apiBaseUrl}/session?directory=${encodeURIComponent(this.projectDirectory)}`;
+      const response = await fetch(url, {
+        method: "GET",
+        headers: {
+          "x-opencode-directory": this.projectDirectory,
+        },
+      });
+
+      if (response.ok) {
+        console.log("[OpenCode] Project initialized:", this.projectDirectory);
+        return true;
+      } else {
+        console.warn("[OpenCode] Project initialization failed:", response.status);
+        return false;
+      }
+    } catch (error) {
+      console.error("[OpenCode] Project initialization error:", error);
+      return false;
+    }
+  }
+
   getSessionUrl(sessionId: string): string {
     return `${this.uiBaseUrl}/session/${sessionId}`;
   }
