@@ -64,8 +64,11 @@ export class ServerManager extends EventEmitter {
     // Determine execution mode and resolve executable path
     let executablePath: string;
     let spawnOptions: SpawnOptions;
-    
-    if (this.settings.useCustomCommand) {
+    const useCustomCommand =
+      Boolean(this.settings.useCustomCommand) &&
+      this.settings.customCommand.trim().length > 0;
+
+    if (useCustomCommand) {
       // Custom command mode: use custom command directly with shell
       executablePath = this.settings.customCommand;
       spawnOptions = {
@@ -101,7 +104,7 @@ export class ServerManager extends EventEmitter {
     }
 
     console.log("[OpenCode] Starting server:", {
-      mode: this.settings.useCustomCommand ? "custom" : "path",
+      mode: useCustomCommand ? "custom" : "path",
       command: executablePath,
       port: this.settings.port,
       hostname: this.settings.hostname,
@@ -109,7 +112,7 @@ export class ServerManager extends EventEmitter {
       projectDirectory: this.projectDirectory,
     });
 
-    if (this.settings.useCustomCommand) {
+    if (useCustomCommand) {
       // Custom command mode: spawn with shell, no args appended
       this.process = this.processImpl.start(
         executablePath,
@@ -163,8 +166,8 @@ export class ServerManager extends EventEmitter {
       this.process = null;
 
       if (err.code === "ENOENT") {
-        const command = this.settings.useCustomCommand 
-          ? this.settings.customCommand 
+        const command = useCustomCommand
+          ? this.settings.customCommand
           : this.settings.opencodePath;
         this.setError(
           `Executable not found: '${command}'`

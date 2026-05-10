@@ -1,5 +1,14 @@
 # OpenCode plugin for Obsidian
 
+> ⚠️ **已知问题（重要）**
+> 
+> 在 Windows 上使用 WSL 时，**同时在 Obsidian 中启动 OpenCode 和在 WSL 中启动 OpenCode 会导致 OpenCode 数据库损坏**。
+> 
+> **请避免同时运行两个实例！** 如果需要在 WSL 中使用 OpenCode，请先关闭 Obsidian 中的 OpenCode 面板，反之亦然。
+>
+> 本插件已解决 WSL 上的 OpenCode 作为插件嵌入到 Windows 上的 Obsidian 中无法正常使用的问题，但上述并发问题仍需注意。
+
+---
 
 Give your notes AI capability by embedding Opencode [OpenCode](https://opencode.ai) AI assistant directly in Obsidian:
 
