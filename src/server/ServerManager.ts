@@ -263,17 +263,21 @@ export class ServerManager extends EventEmitter {
 
   /**
    * Detect and kill a zombie process occupying the configured port.
-   * A zombie is: port is LISTENING but health check fails (server unresponsive).
-   * This prevents "address already in use" errors when restarting the server.
+   * Handles two scenarios:
+   *   1. Zombie process: port LISTENING, process alive but server unresponsive → kill it
+   *   2. Orphan socket: port LISTENING, process already dead → wait for OS to release
+   * If the port cannot be freed, falls back to finding an available port.
    */
   private async killZombieOnPort(): Promise<void> {
-    const findPid = process.platform === "win32"
-      ? (await import("./process/WindowsProcess")).WindowsProcess.findPidOnPort
-      : (await import("./process/PosixProcess")).PosixProcess.findPidOnPort;
+    const isWin32 = process.platform === "win32";
+    const mod = isWin32
+      ? (await import("./process/WindowsProcess")).WindowsProcess
+      : (await import("./process/PosixProcess")).PosixProcess;
 
-    const killPid = process.platform === "win32"
-      ? (await import("./process/WindowsProcess")).WindowsProcess.killPid
-      : (await import("./process/PosixProcess")).PosixProcess.killPid;
+    const findPid = mod.findPidOnPort;
+    const killPid = mod.killPid;
+    const processExists = mod.processExists;
+    const findAvailablePort = mod.findAvailablePort;
 
     const pid = await findPid(this.settings.port);
     if (!pid) {
@@ -287,22 +291,50 @@ export class ServerManager extends EventEmitter {
       return;
     }
 
-    console.warn(`[OpenCode] Zombie process detected on port ${this.settings.port} (PID ${pid}), killing...`);
-    const killed = await killPid(pid);
+    const exists = await processExists(pid);
 
-    if (killed) {
-      // Wait for the port to be released (up to 3 seconds)
-      for (let i = 0; i < 6; i++) {
-        await this.sleep(500);
-        const checkPid = await findPid(this.settings.port);
-        if (!checkPid) {
-          console.log("[OpenCode] Port", this.settings.port, "released after zombie cleanup");
-          return;
+    if (exists) {
+      // Scenario 1: Zombie process still alive → kill it
+      console.warn(`[OpenCode] Zombie process detected on port ${this.settings.port} (PID ${pid}), killing...`);
+      const killed = await killPid(pid);
+
+      if (killed) {
+        // Wait for the port to be released (up to 5 seconds)
+        for (let i = 0; i < 10; i++) {
+          await this.sleep(500);
+          const checkPid = await findPid(this.settings.port);
+          if (!checkPid) {
+            console.log("[OpenCode] Port", this.settings.port, "released after zombie cleanup");
+            return;
+          }
         }
       }
-      console.warn("[OpenCode] Port still occupied after killing zombie, proceeding anyway");
     } else {
-      console.warn("[OpenCode] Failed to kill zombie process, proceeding anyway");
+      // Scenario 2: Orphan socket — process dead but kernel still holds the port
+      console.warn(`[OpenCode] Orphan socket detected on port ${this.settings.port} (PID ${pid} is dead), waiting for OS to release...`);
+    }
+
+    // If we get here, port is still occupied (either kill failed or orphan socket)
+    // Wait up to 15 seconds for the OS to release the orphan socket
+    console.log("[OpenCode] Waiting for port to be released (up to 15s)...");
+    for (let i = 0; i < 30; i++) {
+      await this.sleep(500);
+      const checkPid = await findPid(this.settings.port);
+      if (!checkPid) {
+        console.log("[OpenCode] Port", this.settings.port, "released after waiting");
+        return;
+      }
+    }
+
+    // Port still stuck — find a new available port
+    console.warn("[OpenCode] Port", this.settings.port, "still occupied, finding available port...");
+    const newPort = await findAvailablePort(this.settings.port + 1);
+    if (newPort !== this.settings.port) {
+      console.log("[OpenCode] Using fallback port:", newPort);
+      this.settings.port = newPort;
+      this.emit("portChanged", newPort);
+    } else {
+      console.warn("[OpenCode] No alternative port found, proceeding with original port anyway");
     }
   }
 }

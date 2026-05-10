@@ -32,6 +32,13 @@ export default class OpenCodePlugin extends Plugin {
       this.notifyStateChange(state);
     });
 
+    this.processManager.on("portChanged", async (newPort: number) => {
+      console.log("[OpenCode] Port auto-changed to", newPort, ", saving settings");
+      await this.saveSettings();
+      this.refreshViewUrls();
+      new Notice(`OpenCode: 端口自动切换到 ${newPort}`);
+    });
+
     this.processManager.on("projectDirectoryChanged", async (newDirectory: string) => {
       this.settings.projectDirectory = newDirectory;
       await this.saveData(this.settings);

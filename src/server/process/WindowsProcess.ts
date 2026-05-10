@@ -116,6 +116,43 @@ export class WindowsProcess implements OpenCodeProcess {
     }
   }
 
+  /** Check if a process with the given PID actually exists. */
+  static async processExists(pid: number): Promise<boolean> {
+    try {
+      const { execSync } = require("child_process");
+      execSync(`tasklist /FI "PID eq ${pid}" /NH`, {
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "ignore"],
+      });
+      // tasklist always exits 0; check if the PID appears in output
+      const output = execSync(`tasklist /FI "PID eq ${pid}" /NH`, {
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "ignore"],
+      });
+      return output.includes(pid.toString());
+    } catch {
+      return false;
+    }
+  }
+
+  /** Find an available TCP port starting from `startPort`. */
+  static async findAvailablePort(startPort: number): Promise<number> {
+    const { execSync } = require("child_process");
+    for (let port = startPort; port < startPort + 100; port++) {
+      try {
+        const output = execSync(
+          `powershell -Command "(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue).OwningProcess"`,
+          { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }
+        );
+        const pid = parseInt(output.trim(), 10);
+        if (isNaN(pid)) return port; // No listener on this port
+      } catch {
+        return port; // Get-NetTCPConnection throws when no connections found
+      }
+    }
+    return startPort; // Fallback
+  }
+
   async verifyCommand(command: string): Promise<string | null> {
     // Use 'where' command to check if executable exists in PATH
     try {

@@ -74,6 +74,34 @@ export class PosixProcess implements OpenCodeProcess {
     }
   }
 
+  /** Check if a process with the given PID actually exists. */
+  static async processExists(pid: number): Promise<boolean> {
+    try {
+      process.kill(pid, 0); // Signal 0 = existence check
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Find an available TCP port starting from `startPort`. */
+  static async findAvailablePort(startPort: number): Promise<number> {
+    const { execSync } = require("child_process");
+    for (let port = startPort; port < startPort + 100; port++) {
+      try {
+        const output = execSync(`lsof -iTCP:${port} -sTCP:LISTEN -t`, {
+          encoding: "utf8",
+          stdio: ["pipe", "pipe", "ignore"],
+        });
+        // If we get here, something is listening on this port
+        continue;
+      } catch {
+        return port; // lsof throws when no listeners found
+      }
+    }
+    return startPort; // Fallback
+  }
+
   async verifyCommand(command: string): Promise<string | null> {
     // Check if command is absolute path - verify it exists and is executable
     if (command.startsWith('/') || command.startsWith('./')) {
