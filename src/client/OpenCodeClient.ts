@@ -25,6 +25,14 @@ type OpenCodeMessageWithParts = {
 
 type OpenCodeSession = {
   id?: string;
+  time?: {
+    created?: number;
+    updated?: number;
+  };
+  created?: number;
+  updated?: number;
+  createdAt?: string | number;
+  updatedAt?: string | number;
 };
 
 type OpenCodeResponse<T> = T | { data?: T } | { message?: T } | null;
@@ -100,6 +108,25 @@ export class OpenCodeClient {
     });
     const session = this.unwrap(result);
     return session?.id ?? null;
+  }
+
+  async getLatestSessionId(): Promise<string | null> {
+    const result = await this.request<OpenCodeSession[]>(
+      "GET",
+      `/session?directory=${encodeURIComponent(this.projectDirectory)}`
+    );
+    const sessions = this.unwrap(result);
+    if (!Array.isArray(sessions) || sessions.length === 0) {
+      return null;
+    }
+
+    const latestSession = sessions.reduce((latest, session) => {
+      return this.getSessionTimestamp(session) > this.getSessionTimestamp(latest)
+        ? session
+        : latest;
+    });
+
+    return latestSession.id ?? null;
   }
 
   async updateContext(params: {
@@ -227,6 +254,28 @@ export class OpenCodeClient {
       }
     }
     return result as T;
+  }
+
+  private getSessionTimestamp(session: OpenCodeSession): number {
+    return Math.max(
+      this.toTimestamp(session.time?.updated),
+      this.toTimestamp(session.updated),
+      this.toTimestamp(session.updatedAt),
+      this.toTimestamp(session.time?.created),
+      this.toTimestamp(session.created),
+      this.toTimestamp(session.createdAt)
+    );
+  }
+
+  private toTimestamp(value: string | number | undefined): number {
+    if (typeof value === "number") {
+      return value;
+    }
+    if (typeof value === "string") {
+      const timestamp = Date.parse(value);
+      return Number.isNaN(timestamp) ? 0 : timestamp;
+    }
+    return 0;
   }
 
   private normalizeBaseUrl(baseUrl: string): string {

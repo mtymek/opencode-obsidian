@@ -97,6 +97,14 @@ export class ViewManager {
       return;
     }
 
+    const latestSessionId = await this.client.getLatestSessionId();
+    if (latestSessionId) {
+      const latestSessionUrl = this.client.getSessionUrl(latestSessionId);
+      this.setCachedIframeUrl(latestSessionUrl);
+      view.setIframeUrl(latestSessionUrl);
+      return;
+    }
+
     const cachedUrl = this.getCachedIframeUrl();
     const existingUrl = cachedUrl ?? view.getIframeUrl();
     if (existingUrl && this.client.resolveSessionId(existingUrl)) {

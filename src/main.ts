@@ -25,6 +25,7 @@ export default class OpenCodePlugin extends Plugin {
     registerOpenCodeIcons();
 
     await this.loadSettings();
+    this.cachedIframeUrl = this.settings.lastSessionUrl || null;
 
     // Attempt autodetect if opencodePath is empty and not using custom command
     await this.attemptAutodetect();
@@ -60,9 +61,7 @@ export default class OpenCodePlugin extends Plugin {
       client: this.openCodeClient,
       getServerState: () => this.getServerState(),
       getCachedIframeUrl: () => this.cachedIframeUrl,
-      setCachedIframeUrl: (url) => {
-        this.cachedIframeUrl = url;
-      },
+      setCachedIframeUrl: (url) => this.setCachedIframeUrl(url),
       registerEvent: (ref) => this.registerEvent(ref),
     });
 
@@ -72,9 +71,7 @@ export default class OpenCodePlugin extends Plugin {
       client: this.openCodeClient,
       contextManager: this.contextManager,
       getCachedIframeUrl: () => this.cachedIframeUrl,
-      setCachedIframeUrl: (url) => {
-        this.cachedIframeUrl = url;
-      },
+      setCachedIframeUrl: (url) => this.setCachedIframeUrl(url),
       getServerState: () => this.getServerState(),
     });
 
@@ -237,6 +234,11 @@ export default class OpenCodePlugin extends Plugin {
 
   setCachedIframeUrl(url: string | null): void {
     this.cachedIframeUrl = url;
+    const lastSessionUrl = url ?? "";
+    if (this.settings.lastSessionUrl !== lastSessionUrl) {
+      this.settings.lastSessionUrl = lastSessionUrl;
+      void this.saveData(this.settings);
+    }
   }
 
   onServerStateChange(callback: (state: ServerState) => void): () => void {
@@ -262,7 +264,7 @@ export default class OpenCodePlugin extends Plugin {
     this.openCodeClient.updateBaseUrl(nextApiBaseUrl, nextUiBaseUrl, projectDirectory);
 
     if (this.lastBaseUrl && this.lastBaseUrl !== nextUiBaseUrl) {
-      this.cachedIframeUrl = null;
+      this.setCachedIframeUrl(null);
     }
 
     this.lastBaseUrl = nextUiBaseUrl;
