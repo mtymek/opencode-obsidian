@@ -76,10 +76,10 @@ export class ViewManager {
       const isInSidebar = existingLeaf.getRoot() === this.app.workspace.rightSplit;
 
       if (isInSidebar) {
-        // For sidebar views, check if sidebar is collapsed
+        // For sidebar views, collapse the sidebar instead of detaching the leaf
         const rightSplit = this.app.workspace.rightSplit;
         if (rightSplit && !rightSplit.collapsed) {
-          existingLeaf.detach();
+          rightSplit.collapse();
         } else {
           this.app.workspace.revealLeaf(existingLeaf);
         }
