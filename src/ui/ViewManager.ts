@@ -23,6 +23,7 @@ export class ViewManager {
   private getCachedIframeUrl: () => string | null;
   private setCachedIframeUrl: (url: string | null) => void;
   private getServerState: () => string;
+  private previousEditorLeaf: WorkspaceLeaf | null = null;
 
   constructor(deps: ViewManagerDeps) {
     this.app = deps.app;
@@ -76,12 +77,29 @@ export class ViewManager {
       const isInSidebar = existingLeaf.getRoot() === this.app.workspace.rightSplit;
 
       if (isInSidebar) {
-        // For sidebar views, collapse the sidebar instead of detaching the leaf
         const rightSplit = this.app.workspace.rightSplit;
         if (rightSplit && !rightSplit.collapsed) {
-          rightSplit.collapse();
+          // COLLAPSING: save focus target before collapsing
+          const currentActive = this.app.workspace.activeLeaf;
+          if (currentActive === existingLeaf && this.previousEditorLeaf) {
+            // OpenCode view was focused — restore previous editor focus after collapse
+            rightSplit.collapse();
+            this.app.workspace.setActiveLeaf(this.previousEditorLeaf, { focus: true });
+          } else {
+            rightSplit.collapse();
+          }
         } else {
+          // EXPANDING: save current editor focus, then focus OpenCode
+          const activeLeaf = this.app.workspace.activeLeaf;
+          if (activeLeaf && activeLeaf !== existingLeaf) {
+            this.previousEditorLeaf = activeLeaf;
+          }
           this.app.workspace.revealLeaf(existingLeaf);
+          this.app.workspace.setActiveLeaf(existingLeaf, { focus: true });
+          const view = existingLeaf.view;
+          if (view instanceof OpenCodeView) {
+            requestAnimationFrame(() => view.focusIframe());
+          }
         }
       } else {
         // For main area views, just detach (close the tab)

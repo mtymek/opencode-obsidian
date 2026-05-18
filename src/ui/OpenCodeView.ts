@@ -193,6 +193,10 @@ export class OpenCodeView extends ItemView {
     }
   }
 
+  focusIframe(): void {
+    this.iframeEl?.focus();
+  }
+
   private renderErrorState(): void {
     this.contentEl.empty();
 
