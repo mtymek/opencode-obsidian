@@ -42,7 +42,7 @@ export default class OpenCodePlugin extends Plugin {
       await this.saveData(this.settings);
       this.refreshClientState();
       if (this.getServerState() === "running") {
-        await this.stopServer();
+        await this.stopServer(false);
         await this.startServer();
       }
     });
@@ -117,7 +117,7 @@ export default class OpenCodePlugin extends Plugin {
       id: "start-opencode-server",
       name: "Start OpenCode server",
       callback: () => {
-        this.startServer();
+        void this.startServer();
       },
     });
 
@@ -125,7 +125,7 @@ export default class OpenCodePlugin extends Plugin {
       id: "stop-opencode-server",
       name: "Stop OpenCode server",
       callback: () => {
-        this.stopServer();
+        void this.stopServer();
       },
     });
 
@@ -149,7 +149,7 @@ export default class OpenCodePlugin extends Plugin {
 
   async onunload(): Promise<void> {
     this.contextManager.destroy();
-    await this.stopServer();
+    await this.stopServer(false);
     this.app.workspace.detachLeavesOfType(OPENCODE_VIEW_TYPE);
   }
 
@@ -210,9 +210,11 @@ export default class OpenCodePlugin extends Plugin {
     return success;
   }
 
-  async stopServer(): Promise<void> {
+  async stopServer(showNotice = true): Promise<void> {
     await this.processManager.stop();
-    new Notice("OpenCode server stopped");
+    if (showNotice) {
+      new Notice("OpenCode server stopped");
+    }
   }
 
   getServerState(): ServerState {
@@ -294,7 +296,7 @@ export default class OpenCodePlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("quit", () => {
         console.log("[OpenCode] Obsidian quitting - performing sync cleanup");
-        this.stopServer();
+        this.processManager.stopSync();
       })
     );
   }

@@ -44,6 +44,19 @@ export class PosixProcess implements OpenCodeProcess {
     }
   }
 
+  stopSync(proc: ChildProcess): void {
+    const pid = proc.pid;
+    if (!pid) {
+      return;
+    }
+
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      // 进程可能已经退出
+    }
+  }
+
   async verifyCommand(command: string): Promise<string | null> {
     // Check if command is absolute path - verify it exists and is executable
     if (command.startsWith('/') || command.startsWith('./')) {

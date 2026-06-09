@@ -13,6 +13,9 @@ export interface OpenCodeProcess {
    *  Handles all PID/process tree logic internally. */
   stop(process: ChildProcess): Promise<void>;
 
+  /** Stop the process synchronously during application shutdown. */
+  stopSync(process: ChildProcess): void;
+
   /** Verify that command exists and is executable. Returns error message or null if OK. */
   verifyCommand(command: string): Promise<string | null>;
 }
