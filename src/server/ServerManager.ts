@@ -210,6 +210,20 @@ export class ServerManager extends EventEmitter {
     await this.processImpl.stop(proc);
   }
 
+  stopSync(): void {
+    if (!this.process) {
+      this.setState("stopped");
+      return;
+    }
+
+    const proc = this.process;
+
+    this.setState("stopped");
+    this.process = null;
+
+    this.processImpl.stopSync(proc);
+  }
+
   private setState(state: ServerState): void {
     this.state = state;
     this.emit("stateChange", state);
