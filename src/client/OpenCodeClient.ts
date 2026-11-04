@@ -1,27 +1,10 @@
-type OpenCodePart = {
-  id: string;
-  messageID: string;
-  sessionID: string;
-  type: string;
-  text?: string;
-  ignored?: boolean;
-  synthetic?: boolean;
-  metadata?: Record<string, unknown>;
-  time?: {
-    start: number;
-    end?: number;
-  };
-};
-
-type OpenCodeMessageInfo = {
-  id: string;
-  sessionID: string;
-};
-
-type OpenCodeMessageWithParts = {
-  info: OpenCodeMessageInfo;
-  parts: OpenCodePart[];
-};
+import {
+  buildAuthHeader,
+  buildSessionUrl,
+  normalizeServerUrl,
+  resolveSessionId,
+} from "../lib/serverUrl";
+import { httpRequestJson, type HttpResponse } from "../lib/http";
 
 type OpenCodeSession = {
   id?: string;
@@ -29,22 +12,28 @@ type OpenCodeSession = {
 
 type OpenCodeResponse<T> = T | { data?: T } | { message?: T } | null;
 
+/**
+ * Thin client for the OpenCode 2.x HTTP API (`/api/*`), used for the things the
+ * plugin needs outside the embedded web UI: resolving the project for the vault
+ * directory, creating a session to open, and injecting workspace context.
+ */
 export class OpenCodeClient {
   private apiBaseUrl: string;
   private uiBaseUrl: string;
   private projectDirectory: string;
+  private password = "";
   private trackedSessionId: string | null = null;
-  private lastPart: OpenCodePart | null = null;
+  private lastContextText: string | null = null;
 
   constructor(apiBaseUrl: string, uiBaseUrl: string, projectDirectory: string) {
-    this.apiBaseUrl = this.normalizeBaseUrl(apiBaseUrl);
-    this.uiBaseUrl = this.normalizeBaseUrl(uiBaseUrl);
+    this.apiBaseUrl = normalizeServerUrl(apiBaseUrl);
+    this.uiBaseUrl = normalizeServerUrl(uiBaseUrl);
     this.projectDirectory = projectDirectory;
   }
 
   updateBaseUrl(apiBaseUrl: string, uiBaseUrl: string, projectDirectory: string): void {
-    const nextApiUrl = this.normalizeBaseUrl(apiBaseUrl);
-    const nextUiUrl = this.normalizeBaseUrl(uiBaseUrl);
+    const nextApiUrl = normalizeServerUrl(apiBaseUrl);
+    const nextUiUrl = normalizeServerUrl(uiBaseUrl);
     if (
       nextApiUrl !== this.apiBaseUrl ||
       nextUiUrl !== this.uiBaseUrl ||
@@ -57,28 +46,37 @@ export class OpenCodeClient {
     }
   }
 
-  resetTracking(): void {
-    this.trackedSessionId = null;
-    this.lastPart = null;
+  setPassword(password: string): void {
+    if (password !== this.password) {
+      this.password = password;
+      this.resetTracking();
+    }
   }
 
+  resetTracking(): void {
+    this.trackedSessionId = null;
+    this.lastContextText = null;
+  }
+
+  getApiBaseUrl(): string {
+    return this.apiBaseUrl;
+  }
+
+  /** Make sure the server knows the vault directory as a project. */
   async initializeProject(): Promise<boolean> {
     try {
-      const url = `${this.apiBaseUrl}/session?directory=${encodeURIComponent(this.projectDirectory)}`;
-      const response = await fetch(url, {
-        method: "GET",
-        headers: {
-          "x-opencode-directory": this.projectDirectory,
-        },
-      });
+      const response = await this.request(
+        "GET",
+        `/api/location?location[directory]=${encodeURIComponent(this.projectDirectory)}`
+      );
 
       if (response.ok) {
         console.log("[OpenCode] Project initialized:", this.projectDirectory);
         return true;
-      } else {
-        console.warn("[OpenCode] Project initialization failed:", response.status);
-        return false;
       }
+
+      console.warn("[OpenCode] Project initialization failed:", response.status);
+      return false;
     } catch (error) {
       console.error("[OpenCode] Project initialization error:", error);
       return false;
@@ -86,131 +84,104 @@ export class OpenCodeClient {
   }
 
   getSessionUrl(sessionId: string): string {
-    return `${this.uiBaseUrl}/session/${sessionId}`;
+    return buildSessionUrl(this.uiBaseUrl, sessionId);
   }
 
-  resolveSessionId(iframeUrl: string): string | null {
-    const match = iframeUrl.match(/\/session\/([^/?#]+)/);
-    return match?.[1] ?? null;
+  resolveSessionId(embedUrl: string): string | null {
+    return resolveSessionId(embedUrl);
   }
 
   async createSession(): Promise<string | null> {
-    const result = await this.request<OpenCodeSession>("POST", "/session", {
+    const result = await this.json<OpenCodeSession>("POST", "/api/session", {
       title: "Obsidian",
+      location: { directory: this.projectDirectory },
     });
-    const session = this.unwrap(result);
+    const session = this.unwrap<OpenCodeSession>(result);
     return session?.id ?? null;
   }
 
+  /**
+   * Attach the current workspace context to the session.
+   *
+   * v1 stored this as a hidden message part and patched it in place. v2 has no
+   * part update endpoint; synthetic input is durable instead, so a new message is
+   * only added when the context actually changed.
+   */
   async updateContext(params: {
     sessionId: string;
     contextText: string | null;
   }): Promise<void> {
     const { sessionId, contextText } = params;
 
-    if (this.trackedSessionId && this.trackedSessionId !== sessionId) {
+    if (this.trackedSessionId !== sessionId) {
       this.resetTracking();
+      this.trackedSessionId = sessionId;
     }
-    this.trackedSessionId = sessionId;
 
-    if (!contextText) {
-      await this.ignorePreviousPart();
+    if (!contextText || contextText === this.lastContextText) {
       return;
     }
 
-    if (this.lastPart) {
-      const updated = await this.updatePart(this.lastPart, { text: contextText });
-      if (updated) {
-        return;
-      }
-      await this.ignorePreviousPart();
+    const response = await this.request("POST", `/api/session/${sessionId}/synthetic`, {
+      text: contextText,
+      resume: false,
+    });
+
+    if (!response.ok) {
+      console.warn("[OpenCode] Context injection failed:", response.status);
+      return;
     }
 
-    const message = await this.sendPrompt(sessionId, contextText);
-    if (message?.info?.id) {
-      this.lastPart = message.parts?.[0] ?? null;
-    }
-  }
-
-  private async sendPrompt(sessionId: string, contextText: string): Promise<OpenCodeMessageWithParts | null> {
-    const result = await this.request<OpenCodeMessageWithParts>(
-      "POST",
-      `/session/${sessionId}/message`,
-      {
-        noReply: true,
-        parts: [{ type: "text", text: contextText }],
-      }
-    );
-
+    this.lastContextText = contextText;
     console.log("[OpenCode] Injected context message");
-    console.log(contextText)
-
-    const message = this.unwrap(result);
-    if (!message) {
-      console.error("[OpenCode] Failed to inject context message");
-    }
-    return message;
   }
 
-  private async updatePart(part: OpenCodePart, updates: { text?: string; ignored?: boolean }): Promise<boolean> {
-    const result = await this.request<OpenCodePart>(
-      "PATCH",
-      `/session/${part.sessionID}/message/${part.messageID}/part/${part.id}`,
-      {
-        ...part,
-        ...updates,
-      }
-    );
-    const updated = this.unwrap(result);
-    if (updated) {
-      this.lastPart = updated;
-      return true;
-    }
-    return false;
+  private async request(
+    method: string,
+    path: string,
+    body?: unknown
+  ): Promise<HttpResponse> {
+    // node:http instead of fetch: the renderer's fetch is CORS-blocked against
+    // the OpenCode server (its preflight carries no allow-origin header).
+    return httpRequestJson(method, `${this.apiBaseUrl}${path}`, {
+      headers: this.headers(),
+      body: body ? JSON.stringify(body) : undefined,
+      timeoutMs: 15000,
+    });
   }
 
-  private async ignorePreviousPart(): Promise<boolean> {
-    if (!this.lastPart) {
-      return false;
-    }
-
-    const ignored = await this.updatePart(this.lastPart, { ignored: true });
-    if (!ignored) {
-      return false;
-    }
-
-    this.lastPart = null;
-    return true;
-  }
-
-  private async request<T>(method: string, path: string, body?: unknown): Promise<OpenCodeResponse<T>> {
+  private async json<T>(
+    method: string,
+    path: string,
+    body?: unknown
+  ): Promise<OpenCodeResponse<T>> {
     try {
-      const url = `${this.apiBaseUrl}${path}`;
-      const response = await fetch(url, {
-        method,
-        headers: {
-          "Content-Type": "application/json",
-          "x-opencode-directory": this.projectDirectory,
-        },
-        body: body ? JSON.stringify(body) : undefined,
-      });
+      const response = await this.request(method, path, body);
 
       if (!response.ok) {
-        console.error("[OpenCode] API request failed", {
-          path,
-          status: response.status,
-        });
+        console.error("[OpenCode] API request failed", { path, status: response.status });
         return null;
       }
 
-      const json = await response
-        .json()
-        .catch(() => null);
-      return json as OpenCodeResponse<T>;
+      const text = response.body;
+      if (!text) {
+        return null;
+      }
+      return JSON.parse(text) as OpenCodeResponse<T>;
     } catch (error) {
       console.error("[OpenCode] API request error", error);
       return null;
     }
+  }
+
+  private headers(): Record<string, string> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (this.password) {
+      headers.Authorization = buildAuthHeader(this.password);
+    }
+    return headers;
   }
 
   private unwrap<T>(result: OpenCodeResponse<T>): T | null {
@@ -227,9 +198,5 @@ export class OpenCodeClient {
       }
     }
     return result as T;
-  }
-
-  private normalizeBaseUrl(baseUrl: string): string {
-    return baseUrl.replace(/\/+$/, "");
   }
 }

@@ -57,6 +57,27 @@ If you want to contribute or develop the plugin:
 - Server starts automatically when you open the panel
 
 
+## How it works (OpenCode 2.x)
+
+OpenCode 2 changed both the shape of its web app and its HTTP API. The plugin now:
+
+- hands the server a password via `OPENCODE_SERVER_PASSWORD` and authenticates
+  every API call with HTTP Basic (`opencode:<password>`), because 2.x requires
+  authentication for `/api/*`;
+- opens the app at `<server>/server/<serverKey>/session/<id>`, where
+  `<serverKey>` is the base64url encoding of the server URL - the old
+  `/<base64-directory>` path is no longer a valid route (it made the app throw
+  `Unrecognised route!` / `Cannot read properties of undefined (reading 'type')`);
+- creates the session for the vault, so file tree, `@`-mentions, terminal and git
+  are scoped to it;
+- embeds the app in an Electron `<webview>` instead of an `<iframe>`: the app
+  keeps its known servers (url + password) in `localStorage`, which can only be
+  written from inside the guest, and the pairing-link cookie is `SameSite=Lax`
+  and therefore never sent from an embedded frame;
+- talks to the API through `node:http` rather than `fetch`, because the
+  renderer's `fetch` is subject to CORS and OpenCode sends no
+  `access-control-allow-origin` for the `app://obsidian.md` origin.
+
 ## Settings
 
 ### Custom Command Mode
