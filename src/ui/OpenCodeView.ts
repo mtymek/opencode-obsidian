@@ -3,10 +3,22 @@ import { OPENCODE_VIEW_TYPE } from "../types";
 import { OPENCODE_ICON_NAME } from "../icons";
 import type OpenCodePlugin from "../main";
 import type { ServerState } from "../server/types";
+import {
+  buildCredentialSeedScript,
+  isWebviewSupported,
+  type OpenCodeEmbedElement,
+} from "./embed";
+
+/** How long to wait for the webview to boot before falling back to an iframe. */
+const WEBVIEW_READY_TIMEOUT_MS = 10000;
 
 export class OpenCodeView extends ItemView {
   plugin: OpenCodePlugin;
-  private iframeEl: HTMLIFrameElement | null = null;
+  private embedEl: OpenCodeEmbedElement | HTMLIFrameElement | null = null;
+  private embedKind: "webview" | "iframe" | null = null;
+  private embedReady = false;
+  private seedReloaded = false;
+  private readyWatchdog: number | null = null;
   private currentState: ServerState = "stopped";
   private unsubscribeStateChange: (() => void) | null = null;
 
@@ -53,16 +65,23 @@ export class OpenCodeView extends ItemView {
       this.unsubscribeStateChange();
       this.unsubscribeStateChange = null;
     }
-    
-    // Clean up iframe
-    if (this.iframeEl) {
-      const iframeUrl = this.iframeEl.src;
-      if (iframeUrl.includes("/session/")) {
-        this.plugin.setCachedIframeUrl(iframeUrl);
+
+    this.clearWatchdog();
+
+    // Clean up embed element
+    if (this.embedEl) {
+      const embedUrl = this.getIframeUrl();
+      if (embedUrl && embedUrl.includes("/session/")) {
+        this.plugin.setCachedIframeUrl(embedUrl);
       }
-      this.iframeEl.src = "about:blank";
-      this.iframeEl = null;
+      this.embedEl.setAttribute("src", "about:blank");
+      this.embedEl.detach();
+      this.embedEl = null;
+      this.embedKind = null;
     }
+
+    this.embedReady = false;
+    this.seedReloaded = false;
   }
 
   private updateView(): void {
@@ -126,6 +145,8 @@ export class OpenCodeView extends ItemView {
 
   private renderRunningState(): void {
     this.contentEl.empty();
+    this.embedReady = false;
+    this.seedReloaded = false;
 
     const headerEl = this.contentEl.createDiv({ cls: "opencode-header" });
 
@@ -141,7 +162,7 @@ export class OpenCodeView extends ItemView {
     });
     setIcon(reloadButton, "refresh-cw");
     reloadButton.addEventListener("click", () => {
-      this.reloadIframe();
+      this.reloadEmbed();
     });
 
     const stopButton = actionsEl.createEl("button", {
@@ -152,31 +173,136 @@ export class OpenCodeView extends ItemView {
       this.plugin.stopServer();
     });
 
-    const iframeContainer = this.contentEl.createDiv({
+    const embedContainer = this.contentEl.createDiv({
       cls: "opencode-iframe-container",
     });
 
-    const iframeUrl = this.plugin.getStoredIframeUrl() ?? this.plugin.getServerUrl();
-    console.log("[OpenCode] Loading iframe with URL:", iframeUrl);
+    const serverUrl = this.plugin.getServerUrl();
+    const startUrl = this.plugin.getStoredIframeUrl() ?? serverUrl;
+    console.log("[OpenCode] Loading UI with URL:", startUrl);
 
-    this.iframeEl = iframeContainer.createEl("iframe", {
+    if (isWebviewSupported()) {
+      this.mountWebview(embedContainer, startUrl, serverUrl);
+    } else {
+      this.mountIframe(embedContainer, startUrl, serverUrl, false);
+    }
+  }
+
+  /**
+   * Mount the OpenCode web app in an Electron <webview>.
+   *
+   * The app is served from 127.0.0.1 and is cross-origin to app://obsidian.md,
+   * which means its localStorage can only be written from inside the guest
+   * process - that is what <webview>.executeJavaScript is for.
+   */
+  private mountWebview(
+    container: HTMLElement,
+    startUrl: string,
+    serverUrl: string
+  ): void {
+    const webview = document.createElement("webview") as OpenCodeEmbedElement;
+    webview.addClass("opencode-webview");
+    webview.setAttribute("src", startUrl);
+    webview.setAttribute("allowpopups", "true");
+    container.appendChild(webview);
+
+    this.embedEl = webview;
+    this.embedKind = "webview";
+
+    webview.addEventListener("dom-ready", () => {
+      this.embedReady = true;
+      this.clearWatchdog();
+      void this.handleWebviewReady(webview, serverUrl);
+    });
+
+    webview.addEventListener("did-fail-load", (event: Event) => {
+      const detail = event as unknown as { errorDescription?: string };
+      console.error("[OpenCode] Webview failed to load:", detail.errorDescription);
+    });
+
+    webview.addEventListener("focus", () => {
+      this.plugin.refreshContextForView(this);
+    });
+
+    webview.addEventListener("pointerdown", () => {
+      this.plugin.refreshContextForView(this);
+    });
+
+    this.readyWatchdog = window.setTimeout(() => {
+      if (this.embedReady || this.embedEl !== webview) {
+        return;
+      }
+      console.warn("[OpenCode] Webview did not become ready, falling back to iframe");
+      webview.detach();
+      container.empty();
+      this.mountIframe(container, startUrl, serverUrl, true);
+    }, WEBVIEW_READY_TIMEOUT_MS);
+  }
+
+  /**
+   * Runs on every dom-ready. Seeds the server credential into the web app's
+   * storage (the app keeps its server list there and authenticates API calls
+   * with the stored password), reloading once so the value is picked up during
+   * startup, then navigates to the session for this vault.
+   */
+  private async handleWebviewReady(
+    webview: OpenCodeEmbedElement,
+    serverUrl: string
+  ): Promise<void> {
+    const password = this.plugin.getServerPassword();
+
+    if (password && !this.seedReloaded) {
+      try {
+        const changed = await webview.executeJavaScript(
+          buildCredentialSeedScript(serverUrl, password)
+        );
+        if (this.embedEl !== webview) {
+          return;
+        }
+        if (changed === true) {
+          this.seedReloaded = true;
+          this.embedReady = false;
+          webview.reload();
+          return;
+        }
+      } catch (error) {
+        console.warn("[OpenCode] Failed to seed server credentials", error);
+      }
+    }
+
+    void this.plugin.ensureSessionUrl(this);
+  }
+
+  private mountIframe(
+    container: HTMLElement,
+    startUrl: string,
+    _serverUrl: string,
+    afterFallback: boolean
+  ): void {
+    const notice = container.createDiv({ cls: "opencode-notice" });
+    notice.setText(
+      afterFallback
+        ? "Electron webview unavailable - OpenCode must be connected manually: run `opencode pair`, then paste the pairing link into the embedded window."
+        : "OpenCode 2 needs a pairing link: run `opencode pair`, then paste it into the window below."
+    );
+
+    const frame = container.createEl("iframe", {
       cls: "opencode-iframe",
       attr: {
-        src: iframeUrl,
+        src: startUrl,
         frameborder: "0",
         allow: "clipboard-read; clipboard-write",
       },
     });
 
-    this.iframeEl.addEventListener("error", () => {
-      console.error("Failed to load OpenCode iframe");
-    });
+    this.embedEl = frame;
+    this.embedKind = "iframe";
 
-    this.iframeEl.addEventListener("focus", () => {
+    frame.addEventListener("focus", () => {
       this.plugin.refreshContextForView(this);
     });
 
-    this.iframeEl.addEventListener("pointerdown", () => {
+    frame.addEventListener("pointerdown", () => {
       this.plugin.refreshContextForView(this);
     });
 
@@ -184,12 +310,15 @@ export class OpenCodeView extends ItemView {
   }
 
   getIframeUrl(): string | null {
-    return this.iframeEl?.src ?? null;
+    return this.embedEl?.getAttribute("src") ?? null;
   }
 
   setIframeUrl(url: string): void {
-    if (this.iframeEl && this.iframeEl.src !== url) {
-      this.iframeEl.src = url;
+    if (!this.embedEl) {
+      return;
+    }
+    if (this.getIframeUrl() !== url) {
+      this.embedEl.setAttribute("src", url);
     }
   }
 
@@ -204,7 +333,7 @@ export class OpenCodeView extends ItemView {
     setIcon(iconEl, "alert-circle");
 
     statusContainer.createEl("h3", { text: "Failed to start OpenCode" });
-    
+
     const errorMessage = this.plugin.getLastError();
     if (errorMessage) {
       statusContainer.createEl("p", {
@@ -239,15 +368,32 @@ export class OpenCodeView extends ItemView {
     });
   }
 
-  private reloadIframe(): void {
-    if (this.iframeEl) {
-      const src = this.iframeEl.src;
-      this.iframeEl.src = "about:blank";
-      setTimeout(() => {
-        if (this.iframeEl) {
-          this.iframeEl.src = src;
-        }
-      }, 100);
+  private reloadEmbed(): void {
+    const embed = this.embedEl;
+    if (!embed) {
+      return;
+    }
+
+    if (this.embedKind === "webview") {
+      this.embedReady = false;
+      this.seedReloaded = false;
+      (embed as OpenCodeEmbedElement).reload();
+      return;
+    }
+
+    const src = embed.getAttribute("src") ?? "";
+    embed.setAttribute("src", "about:blank");
+    setTimeout(() => {
+      if (this.embedEl === embed) {
+        embed.setAttribute("src", src);
+      }
+    }, 100);
+  }
+
+  private clearWatchdog(): void {
+    if (this.readyWatchdog !== null) {
+      window.clearTimeout(this.readyWatchdog);
+      this.readyWatchdog = null;
     }
   }
 }

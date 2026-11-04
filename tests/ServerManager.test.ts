@@ -81,18 +81,30 @@ describe("ServerManager", () => {
       expect(stateHistory).toContain("running");
     }, 30000); // Increased timeout for database migration on first run
 
-     test("reports correct server URL with encoded project directory", async () => {
+     test("reports the plain server URL (v2 has no project path segment)", async () => {
        const port = getNextPort();
        const settings = createTestSettings(port);
 
        currentManager = new ServerManager(settings, PROJECT_DIR);
 
-      const url = currentManager.getUrl();
-      const expectedBase = `http://127.0.0.1:${port}`;
-      const expectedPath = Buffer.from(PROJECT_DIR).toString('base64');
-
-      expect(url).toBe(`${expectedBase}/${expectedPath}`);
+      expect(currentManager.getUrl()).toBe(`http://127.0.0.1:${port}`);
     });
+
+     test("derives a stable password for the server", async () => {
+       const port = getNextPort();
+       const settings = createTestSettings(port);
+
+       const first = new ServerManager(settings, PROJECT_DIR);
+       const second = new ServerManager(settings, PROJECT_DIR);
+
+       // Same host/port must yield the same password so a server left over from
+       // a previous session still accepts our credentials.
+       expect(first.getPassword()).toBe(second.getPassword());
+       expect(first.getPassword().length).toBeGreaterThan(0);
+
+       const other = new ServerManager({ ...settings, port: port + 1 }, PROJECT_DIR);
+       expect(other.getPassword()).not.toBe(first.getPassword());
+     });
 
      test("stops server gracefully and transitions to stopped state", async () => {
        const port = getNextPort();
@@ -190,11 +202,11 @@ describe("ServerManager", () => {
 
       await currentManager.start();
 
-      // Verify we can hit the health endpoint
+      // Verify we can hit the API with the credentials we handed to the server
       const url = currentManager.getUrl();
-      const healthUrl = `${url}/global/health`;
 
-      const response = await fetch(healthUrl, {
+      const response = await fetch(`${url}/api/info`, {
+        headers: { Authorization: currentManager.getAuthHeader() },
         signal: AbortSignal.timeout(2000),
       });
 
@@ -287,35 +299,27 @@ describe("ServerManager", () => {
   });
 
   describe("Unicode path support", () => {
-    test("getUrl handles Chinese characters in project directory", () => {
+    // OpenCode 2 no longer encodes the project directory in the URL, so a
+    // non-Latin1 vault path must simply not leak into it (issue #28 regression).
+    test("getUrl is independent of the project directory (Chinese)", () => {
       const settings = createTestSettings(getNextPort());
-      const chinesePath = "C:/用户/Notes";
-      const manager = new ServerManager(settings, chinesePath);
+      const manager = new ServerManager(settings, "C:/用户/Notes");
 
-      const url = manager.getUrl();
-
-      expect(url).toContain("http://127.0.0.1:");
-      expect(url).toContain(Buffer.from(chinesePath).toString('base64'));
+      expect(manager.getUrl()).toBe(`http://127.0.0.1:${settings.port}`);
     });
 
-    test("getUrl handles Japanese characters in project directory", () => {
+    test("getUrl is independent of the project directory (Japanese)", () => {
       const settings = createTestSettings(getNextPort());
-      const japanesePath = "/home/ユーザー/ノート";
-      const manager = new ServerManager(settings, japanesePath);
+      const manager = new ServerManager(settings, "/home/ユーザー/ノート");
 
-      const url = manager.getUrl();
-
-      expect(url).toContain(Buffer.from(japanesePath).toString('base64'));
+      expect(manager.getUrl()).toBe(`http://127.0.0.1:${settings.port}`);
     });
 
-    test("getUrl handles emoji in project directory", () => {
+    test("getUrl is independent of the project directory (emoji)", () => {
       const settings = createTestSettings(getNextPort());
-      const emojiPath = "/home/user/📁Notes";
-      const manager = new ServerManager(settings, emojiPath);
+      const manager = new ServerManager(settings, "/home/user/📁Notes");
 
-      const url = manager.getUrl();
-
-      expect(url).toContain(Buffer.from(emojiPath).toString('base64'));
+      expect(manager.getUrl()).toBe(`http://127.0.0.1:${settings.port}`);
     });
   });
 });

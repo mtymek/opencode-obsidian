@@ -1,13 +1,19 @@
 import { ChildProcess, SpawnOptions } from "child_process";
 import { EventEmitter } from "events";
+import { createHash } from "crypto";
 import { OpenCodeSettings } from "../types";
 import { ServerState } from "./types";
 import { OpenCodeProcess } from "./process/OpenCodeProcess";
 import { WindowsProcess } from "./process/WindowsProcess";
 import { PosixProcess } from "./process/PosixProcess";
 import { ExecutableResolver } from "./ExecutableResolver";
+import { buildAuthHeader, normalizeServerUrl } from "../lib/serverUrl";
+import { httpRequestJson } from "../lib/http";
 
 export type { ServerState } from "./types";
+
+/** Health probe outcome: authenticated, rejected, or nothing listening. */
+type HealthStatus = "ok" | "unauthorized" | "down";
 
 export class ServerManager extends EventEmitter {
   private process: ChildProcess | null = null;
@@ -43,9 +49,31 @@ export class ServerManager extends EventEmitter {
     return this.lastError;
   }
 
+  /**
+   * OpenCode 2 serves one web app per server and no longer encodes the project
+   * directory in the URL; the directory is selected by the session instead.
+   */
   getUrl(): string {
-    const encodedPath = Buffer.from(this.projectDirectory).toString('base64');
-    return `http://${this.settings.hostname}:${this.settings.port}/${encodedPath}`;
+    return normalizeServerUrl(`http://${this.settings.hostname}:${this.settings.port}`);
+  }
+
+  /**
+   * Password handed to the server via OPENCODE_SERVER_PASSWORD.
+   *
+   * It is derived from host and port so that a server left over from a previous
+   * Obsidian session still accepts our credentials instead of failing with 401
+   * "port already in use". Derived from port/host only (not the vault path) so
+   * switching the project directory does not invalidate a running server.
+   */
+  getPassword(): string {
+    return createHash("sha256")
+      .update(`obsidian-opencode:${this.settings.hostname}:${this.settings.port}`)
+      .digest("hex")
+      .slice(0, 32);
+  }
+
+  getAuthHeader(): string {
+    return buildAuthHeader(this.getPassword());
   }
 
   async start(): Promise<boolean> {
@@ -64,40 +92,43 @@ export class ServerManager extends EventEmitter {
     // Determine execution mode and resolve executable path
     let executablePath: string;
     let spawnOptions: SpawnOptions;
-    
+
     if (this.settings.useCustomCommand) {
       // Custom command mode: use custom command directly with shell
       executablePath = this.settings.customCommand;
       spawnOptions = {
         cwd: this.projectDirectory,
-        env: { ...process.env, NODE_USE_SYSTEM_CA: "1" },
+        env: this.buildEnv(),
         stdio: ["ignore", "pipe", "pipe"],
         shell: true,
       };
     } else {
       // Path mode: resolve executable and verify
       executablePath = ExecutableResolver.resolve(this.settings.opencodePath);
-      
+
       // Pre-flight check: verify executable exists (only for path mode)
       const commandError = await this.processImpl.verifyCommand(executablePath);
       if (commandError) {
         return this.setError(commandError);
       }
-      
+
       spawnOptions = {
         cwd: this.projectDirectory,
-        env: { ...process.env, NODE_USE_SYSTEM_CA: "1" },
+        env: this.buildEnv(),
         stdio: ["ignore", "pipe", "pipe"],
       };
     }
 
-    if (await this.checkServerHealth()) {
-      console.log(
-        "[OpenCode] Server already running on port",
-        this.settings.port
-      );
+    const health = await this.checkServerHealth();
+    if (health === "ok") {
+      console.log("[OpenCode] Server already running on port", this.settings.port);
       this.setState("running");
       return true;
+    }
+    if (health === "unauthorized") {
+      return this.setError(
+        `Port ${this.settings.port} is already used by an OpenCode server that rejects this plugin's password. Stop that server (or change the port in the plugin settings) and retry.`
+      );
     }
 
     console.log("[OpenCode] Starting server:", {
@@ -163,12 +194,10 @@ export class ServerManager extends EventEmitter {
       this.process = null;
 
       if (err.code === "ENOENT") {
-        const command = this.settings.useCustomCommand 
-          ? this.settings.customCommand 
+        const command = this.settings.useCustomCommand
+          ? this.settings.customCommand
           : this.settings.opencodePath;
-        this.setError(
-          `Executable not found: '${command}'`
-        );
+        this.setError(`Executable not found: '${command}'`);
       } else {
         this.setError(`Failed to start: ${err.message}`);
       }
@@ -210,6 +239,16 @@ export class ServerManager extends EventEmitter {
     await this.processImpl.stop(proc);
   }
 
+  private buildEnv(): NodeJS.ProcessEnv {
+    return {
+      ...process.env,
+      NODE_USE_SYSTEM_CA: "1",
+      // OpenCode 2 prints a random password unless one is supplied. Supplying a
+      // stable one keeps the embedded web UI authenticated across restarts.
+      OPENCODE_SERVER_PASSWORD: this.getPassword(),
+    };
+  }
+
   private setState(state: ServerState): void {
     this.state = state;
     this.emit("stateChange", state);
@@ -222,15 +261,27 @@ export class ServerManager extends EventEmitter {
     return false;
   }
 
-  private async checkServerHealth(): Promise<boolean> {
+  /**
+   * OpenCode 2 exposes its API under /api. A request without valid credentials
+   * returns 401 - which distinguishes "server we may talk to" from "some other
+   * server squatting on our port".
+   */
+  private async checkServerHealth(): Promise<HealthStatus> {
     try {
-      const response = await fetch(`${this.getUrl()}/global/health`, {
-        method: "GET",
-        signal: AbortSignal.timeout(2000),
+      // node:http, not fetch: renderer fetch is CORS-blocked against the server.
+      const response = await httpRequestJson("GET", `${this.getUrl()}/api/info`, {
+        headers: { Authorization: this.getAuthHeader() },
+        timeoutMs: 2000,
       });
-      return response.ok;
+      if (response.ok) {
+        return "ok";
+      }
+      if (response.status === 401) {
+        return "unauthorized";
+      }
+      return "down";
     } catch {
-      return false;
+      return "down";
     }
   }
 
@@ -244,7 +295,7 @@ export class ServerManager extends EventEmitter {
         return false;
       }
 
-      if (await this.checkServerHealth()) {
+      if ((await this.checkServerHealth()) === "ok") {
         return true;
       }
       await this.sleep(pollInterval);

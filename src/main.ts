@@ -52,6 +52,7 @@ export default class OpenCodePlugin extends Plugin {
       this.getServerUrl(),
       projectDirectory
     );
+    this.openCodeClient.setPassword(this.processManager.getPassword());
     this.lastBaseUrl = this.getServerUrl();
 
     this.contextManager = new ContextManager({
@@ -227,6 +228,11 @@ export default class OpenCodePlugin extends Plugin {
     return this.processManager.getUrl();
   }
 
+  /** Password the embedded OpenCode web UI must use to talk to its server. */
+  getServerPassword(): string {
+    return this.processManager.getPassword();
+  }
+
   getApiBaseUrl(): string {
     return `http://${this.settings.hostname}:${this.settings.port}`;
   }
@@ -260,6 +266,7 @@ export default class OpenCodePlugin extends Plugin {
     const nextApiBaseUrl = this.getApiBaseUrl();
     const projectDirectory = this.getProjectDirectory();
     this.openCodeClient.updateBaseUrl(nextApiBaseUrl, nextUiBaseUrl, projectDirectory);
+    this.openCodeClient.setPassword(this.processManager.getPassword());
 
     if (this.lastBaseUrl && this.lastBaseUrl !== nextUiBaseUrl) {
       this.cachedIframeUrl = null;

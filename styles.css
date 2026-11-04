@@ -69,6 +69,25 @@
   background-color: var(--background-primary);
 }
 
+/* Electron webview embed (used when webviewTag is available) */
+.opencode-webview {
+  display: inline-flex;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background-color: var(--background-primary);
+}
+
+/* Hint shown above the iframe fallback */
+.opencode-notice {
+  flex: none;
+  padding: 8px 12px;
+  font-size: 0.85em;
+  color: var(--text-muted);
+  background-color: var(--background-secondary);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
 /* Status container (for stopped/starting/error states) */
 .opencode-status-container {
   display: flex;
